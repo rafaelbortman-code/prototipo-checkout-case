@@ -22,6 +22,7 @@ import {
   ShoppingBag,
   SlidersHorizontal,
   Sparkles,
+  Tag,
   Terminal,
   Timer,
   TrendingDown,
@@ -34,7 +35,7 @@ import {
 type BuyerProfile = 'new' | 'pix' | 'card'
 type PaymentMethod = 'pix' | 'card' | 'koin'
 type ShippingOption = 'standard' | 'express'
-type Toggles = { paymentMix: boolean; socialShare: boolean; vtexAds: boolean; saveForLater: boolean }
+type Toggles = { paymentMix: boolean; socialShare: boolean; vtexAds: boolean; saveForLater: boolean; coupons: boolean }
 
 type CartItem = {
   id: string
@@ -46,14 +47,14 @@ type CartItem = {
 }
 
 const CART: CartItem[] = [
-  { id: 'tenis', name: 'Tênis Runner Pro', variant: 'Branco · 42', price: 400, image: '/products/tenis.png' },
-  { id: 'meia', name: 'Meia Performance Cano Médio', variant: 'Branco · M', price: 50, image: '/products/meia.png' },
+  { id: 'fogao', name: 'Fogão 5 Bocas Inox Turbo', variant: 'Inox · Mesa de Vidro', price: 1899, image: '/placeholder.svg' },
+  { id: 'panela', name: 'Panela de Pressão Elétrica Digital', variant: '6 Litros · Preta', price: 349, image: '/placeholder.svg' },
 ]
 
 const UPSELL_PRODUCTS: CartItem[] = [
-  { id: 'cadarco', name: 'Cadarço Extra Resistente', variant: 'Preto · Par avulso', price: 19.9, image: '/products/cadarco.png', upsell: true },
-  { id: 'palmilha', name: 'Palmilha Conforto Gel', variant: 'Tamanho único', price: 29.9, image: '/products/palmilha.png', upsell: true },
-  { id: 'spray', name: 'Spray Impermeabilizante', variant: '200ml', price: 24.9, image: '/products/spray.png', upsell: true },
+  { id: 'kit-limpeza', name: 'Kit Limpeza para Inox', variant: 'Kit com 3 itens', price: 39.9, image: '/placeholder.svg', upsell: true },
+  { id: 'mangueira', name: 'Mangueira de Gás Extra Flexível', variant: '1,5m · Certificada', price: 49.9, image: '/placeholder.svg', upsell: true },
+  { id: 'regulador', name: 'Regulador de Gás de Alta Precisão', variant: 'Universal', price: 34.9, image: '/placeholder.svg', upsell: true },
 ]
 
 const PROFILE_OPTIONS: { value: BuyerProfile; label: string }[] = [
@@ -83,7 +84,14 @@ const PIX_DISCOUNT_RATE = 0.05
 const WARRANTY_PRICE = 39.9
 const MAX_MIXED_METHODS = 2
 const PIX_TIMER_SECONDS = 10 * 60
-const ORDER_ID = 'RS-240927'
+const ORDER_ID = 'EL-240927'
+
+type Coupon = { code: string; label: string; type: 'percent' | 'shipping'; value: number }
+
+const COUPONS: Record<string, Coupon> = {
+  BEMVINDO10: { code: 'BEMVINDO10', label: '10% OFF no pedido', type: 'percent', value: 0.1 },
+  FRETEGRATIS: { code: 'FRETEGRATIS', label: 'Frete grátis', type: 'shipping', value: 0 },
+}
 
 const brl = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -121,6 +129,7 @@ export default function ModularCheckout() {
     socialShare: false,
     vtexAds: false,
     saveForLater: false,
+    coupons: false,
   })
   const [methods, setMethods] = useState<PaymentMethod[]>(['card'])
   const [split, setSplit] = useState(50)
@@ -131,6 +140,9 @@ export default function ModularCheckout() {
   const [wantsSocialShare, setWantsSocialShare] = useState(false)
   const [cartItems, setCartItems] = useState<CartItem[]>(CART)
   const [savedItems, setSavedItems] = useState<CartItem[]>([])
+  const [couponInput, setCouponInput] = useState('')
+  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null)
+  const [couponError, setCouponError] = useState('')
 
   const isNewUser = profile === 'new'
   const hasFreeShippingUnlock = isNewUser || cartItems.some((i) => i.upsell)
@@ -147,6 +159,9 @@ export default function ModularCheckout() {
     setWantsSocialShare(false)
     setCartItems(CART)
     setSavedItems([])
+    setCouponInput('')
+    setAppliedCoupon(null)
+    setCouponError('')
   }
 
   const changeProfile = (next: BuyerProfile) => {
@@ -158,6 +173,11 @@ export default function ModularCheckout() {
     setToggles((t) => ({ ...t, [key]: value }))
     if (key === 'paymentMix' && !value) setMethods((m) => m.slice(0, 1))
     if (key === 'socialShare' && !value) setWantsSocialShare(false)
+    if (key === 'coupons' && !value) {
+      setAppliedCoupon(null)
+      setCouponInput('')
+      setCouponError('')
+    }
     if (key === 'saveForLater' && !value && savedItems.length > 0) {
       setCartItems((items) => [...items, ...savedItems])
       setSavedItems([])
@@ -188,6 +208,24 @@ export default function ModularCheckout() {
     setCartItems((items) => (items.some((i) => i.id === product.id) ? items : [...items, product]))
   }
 
+  const applyCoupon = () => {
+    const normalized = couponInput.trim().toUpperCase()
+    const coupon = COUPONS[normalized]
+    if (!coupon) {
+      setAppliedCoupon(null)
+      setCouponError('Cupom inválido ou expirado.')
+      return
+    }
+    setAppliedCoupon(coupon)
+    setCouponError('')
+  }
+
+  const removeCoupon = () => {
+    setAppliedCoupon(null)
+    setCouponInput('')
+    setCouponError('')
+  }
+
   const toggleMethod = (method: PaymentMethod) => {
     if (!toggles.paymentMix) {
       setMethods([method])
@@ -212,7 +250,8 @@ export default function ModularCheckout() {
   const totals = useMemo(() => {
     const subtotal = cartItems.reduce((sum, item) => sum + item.price, 0)
     const warrantyValue = warranty ? WARRANTY_PRICE : 0
-    const shippingValue = hasFreeShippingUnlock ? 0 : SHIPPING[shipping].price
+    const couponFreeShipping = toggles.coupons && appliedCoupon?.type === 'shipping'
+    const shippingValue = hasFreeShippingUnlock || couponFreeShipping ? 0 : SHIPPING[shipping].price
     const base = subtotal + warrantyValue + shippingValue
 
     const shares = new Map<PaymentMethod, number>()
@@ -223,16 +262,24 @@ export default function ModularCheckout() {
     }
 
     const pixSavings = base * PIX_DISCOUNT_RATE
-    const discount = base * (shares.get('pix') ?? 0) * PIX_DISCOUNT_RATE
+    const pixDiscount = base * (shares.get('pix') ?? 0) * PIX_DISCOUNT_RATE
+    const couponDiscount =
+      toggles.coupons && appliedCoupon?.type === 'percent' ? (base - pixDiscount) * appliedCoupon.value : 0
+    const discount = pixDiscount + couponDiscount
     const total = base - discount
-    const amounts = methods.map((m) => ({
-      method: m,
-      percent: Math.round((shares.get(m) ?? 0) * 100),
-      amount: base * (shares.get(m) ?? 0) - (m === 'pix' ? discount : 0),
-    }))
+    const amounts = methods.map((m) => {
+      const share = shares.get(m) ?? 0
+      const methodPixDiscount = m === 'pix' ? pixDiscount : 0
+      const methodCouponDiscount = couponDiscount * share
+      return {
+        method: m,
+        percent: Math.round(share * 100),
+        amount: base * share - methodPixDiscount - methodCouponDiscount,
+      }
+    })
 
-    return { subtotal, warrantyValue, shippingValue, pixSavings, discount, total, amounts }
-  }, [warranty, hasFreeShippingUnlock, shipping, methods, split, cartItems])
+    return { subtotal, warrantyValue, shippingValue, pixSavings, discount, couponDiscount, total, amounts }
+  }, [warranty, hasFreeShippingUnlock, shipping, methods, split, cartItems, toggles.coupons, appliedCoupon])
 
   const amountFor = (m: PaymentMethod) => totals.amounts.find((a) => a.method === m)?.amount ?? totals.total
 
@@ -249,8 +296,11 @@ export default function ModularCheckout() {
     if (toggles.saveForLater) log.push('mod.save_for_later → cart.mount(save_action) · retenção')
     if (toggles.vtexAds && cartItems.some((i) => i.upsell))
       log.push('client.cross_sell_added → shipping.override(free) · +AOV via vtex_ads')
+    if (toggles.coupons) log.push('mod.coupons → checkout.mount(coupon_input) · disponível para o cliente')
+    if (toggles.coupons && appliedCoupon)
+      log.push(`client.coupon_applied(${appliedCoupon.code}) → pricing.override(${appliedCoupon.type}) · -${appliedCoupon.type === 'percent' ? `${appliedCoupon.value * 100}%` : 'frete'}`)
     return log
-  }, [profile, toggles, wantsSocialShare, cartItems])
+  }, [profile, toggles, wantsSocialShare, cartItems, appliedCoupon])
 
   const confirmOrder = () => {
     setPlaced(true)
@@ -273,7 +323,7 @@ export default function ModularCheckout() {
             <div className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
               <ShoppingBag className="size-4" aria-hidden="true" />
             </div>
-            <span className="font-semibold tracking-tight">RunStore</span>
+            <span className="font-semibold tracking-tight">ElectroLar</span>
           </div>
           <ol className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex" aria-label="Etapas do checkout">
             <li className="flex items-center gap-1.5">
@@ -360,7 +410,7 @@ export default function ModularCheckout() {
                         <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
                         <div>
                           <p className="text-sm font-semibold">Adicionar Garantia Estendida por + {brl(WARRANTY_PRICE)}</p>
-                          <p className="text-xs text-muted-foreground">12 meses extras de cobertura para o seu tênis.</p>
+                          <p className="text-xs text-muted-foreground">12 meses extras de cobertura para o seu fogão.</p>
                         </div>
                       </div>
                       <button
@@ -470,6 +520,13 @@ export default function ModularCheckout() {
             onMoveBackToCart={moveBackToCart}
             vtexAdsEnabled={toggles.vtexAds}
             onAddUpsell={addUpsellItem}
+            couponsEnabled={toggles.coupons}
+            couponInput={couponInput}
+            onCouponInputChange={setCouponInput}
+            onApplyCoupon={applyCoupon}
+            onRemoveCoupon={removeCoupon}
+            appliedCoupon={appliedCoupon}
+            couponError={couponError}
           />
         </main>
       )}
@@ -555,18 +612,24 @@ function DebugPanel({
                 checked={toggles.paymentMix}
                 onChange={(v) => onToggle('paymentMix', v)}
               />
-            </div>
-          </fieldset>
-
-          <fieldset className="flex flex-col gap-2">
-            <legend className="mb-2 font-mono text-[11px] uppercase tracking-wider text-zinc-500">extra.apps</legend>
-            <div className="flex flex-wrap gap-2">
+              <DebugToggle
+                label="Habilitar Cupons"
+                icon={Tag}
+                checked={toggles.coupons}
+                onChange={(v) => onToggle('coupons', v)}
+              />
               <DebugToggle
                 label="Habilitar Social Share"
                 icon={Share2}
                 checked={toggles.socialShare}
                 onChange={(v) => onToggle('socialShare', v)}
               />
+            </div>
+          </fieldset>
+
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-2 font-mono text-[11px] uppercase tracking-wider text-zinc-500">extra.apps</legend>
+            <div className="flex flex-wrap gap-2">
               <DebugToggle
                 label="Habilitar Save for Later"
                 icon={Heart}
@@ -631,15 +694,15 @@ function DebugToggle({
 
 const AD_BY_PROFILE: Record<BuyerProfile, { title: string; description: string }> = {
   new: {
-    title: 'Kit Primeira Corrida · 15% OFF',
-    description: 'Clientes novos que levam o kit completo economizam no frete e ganham garantia estendida grátis.',
+    title: 'Kit Instalação Grátis · 1ª Compra',
+    description: 'Clientes novos que levam a instalação profissional junto ganham frete grátis e suporte técnico prioritário.',
   },
   pix: {
-    title: 'Garrafa Térmica RunStore · R$ 39,90',
-    description: 'Baseado no seu histórico com Pix, combina com o seu pedido e chega junto no mesmo frete.',
+    title: 'Garantia Estendida ElectroLar · R$ 49,90',
+    description: 'Baseado no seu histórico com Pix, garanta 12 meses extras de cobertura com desconto.',
   },
   card: {
-    title: 'Assinatura RunStore Plus · 3x sem juros',
+    title: 'Assinatura ElectroLar Plus · 3x sem juros',
     description: 'Baseado no seu perfil de compra no cartão, garanta frete grátis nas próximas 3 compras.',
   },
 }
@@ -983,11 +1046,19 @@ function OrderSummary({
   onMoveBackToCart,
   vtexAdsEnabled,
   onAddUpsell,
+  couponsEnabled,
+  couponInput,
+  onCouponInputChange,
+  onApplyCoupon,
+  onRemoveCoupon,
+  appliedCoupon,
+  couponError,
 }: {
   totals: {
     subtotal: number
     shippingValue: number
     discount: number
+    couponDiscount: number
     total: number
     amounts: { method: PaymentMethod; percent: number; amount: number }[]
   }
@@ -1004,6 +1075,13 @@ function OrderSummary({
   onMoveBackToCart: (id: string) => void
   vtexAdsEnabled: boolean
   onAddUpsell: (product: CartItem) => void
+  couponsEnabled: boolean
+  couponInput: string
+  onCouponInputChange: (value: string) => void
+  onApplyCoupon: () => void
+  onRemoveCoupon: () => void
+  appliedCoupon: Coupon | null
+  couponError: string
 }) {
   return (
     <aside aria-labelledby="summary-title" className="flex flex-col gap-4 lg:sticky lg:top-6 lg:self-start">
@@ -1194,7 +1272,7 @@ function SuccessPage({
   const pix = amounts.find((a) => a.method === 'pix')
   const half = total / 2
   const shareText = encodeURIComponent(
-    `Oi! Reservei um pedido na RunStore (#${ORDER_ID}). Falta ${brl(half)} para finalizar — o link expira em 2h: https://runstore.example/pagar/${ORDER_ID}`,
+    `Oi! Reservei um pedido na ElectroLar (#${ORDER_ID}). Falta ${brl(half)} para finalizar — o link expira em 2h: https://electrolar.example/pagar/${ORDER_ID}`,
   )
 
   const methodDetail = (a: (typeof amounts)[number]) => {
@@ -1332,7 +1410,7 @@ function PixCountdown() {
 
 function CopyPixButton() {
   const [copied, setCopied] = useState(false)
-  const code = `00020126580014BR.GOV.BCB.PIX0136runstore-${ORDER_ID}5204000053039865802BR6009SAO PAULO`
+  const code = `00020126580014BR.GOV.BCB.PIX0136electrolar-${ORDER_ID}5204000053039865802BR6009SAO PAULO`
 
   const copy = async () => {
     try {
