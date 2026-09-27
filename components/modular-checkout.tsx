@@ -14,6 +14,7 @@ import {
   Lock,
   MapPin,
   Megaphone,
+  Monitor,
   Plus,
   QrCode,
   RotateCcw,
@@ -21,7 +22,8 @@ import {
   ShieldCheck,
   ShoppingBag,
   SlidersHorizontal,
-  Sparkles,
+  Smartphone,
+  Store,
   Tag,
   Terminal,
   Timer,
@@ -33,9 +35,18 @@ import {
 } from 'lucide-react'
 
 type BuyerProfile = 'new' | 'pix' | 'card'
+type Device = 'mobile' | 'desktop'
 type PaymentMethod = 'pix' | 'card' | 'koin'
-type ShippingOption = 'standard' | 'express'
-type Toggles = { paymentMix: boolean; socialShare: boolean; vtexAds: boolean; saveForLater: boolean; coupons: boolean }
+type ShippingOption = 'standard' | 'express' | 'pickup'
+type Toggles = {
+  paymentMix: boolean
+  socialShare: boolean
+  vtexAds: boolean
+  saveForLater: boolean
+  coupons: boolean
+  pickup: boolean
+}
+type EnabledMethods = Record<PaymentMethod, boolean>
 
 type CartItem = {
   id: string
@@ -52,7 +63,7 @@ const CART: CartItem[] = [
 ]
 
 const UPSELL_PRODUCTS: CartItem[] = [
-  { id: 'cadarco', name: 'Cadarço Extra Resistente', variant: 'Preto · Par avulso', price: 19.9, image: '/products/cadarco.png', upsell: true },
+  { id: 'cadarco', name: 'Cadarço Extra Resistente', variant: 'Preto · Par avulso', price: 29.9, image: '/products/cadarco.png', upsell: true },
   { id: 'palmilha', name: 'Palmilha Conforto Gel', variant: 'Tamanho único', price: 29.9, image: '/products/palmilha.png', upsell: true },
   { id: 'spray', name: 'Spray Impermeabilizante', variant: '200ml', price: 24.9, image: '/products/spray.png', upsell: true },
 ]
@@ -78,6 +89,7 @@ const METHOD_LABEL: Record<PaymentMethod, string> = {
 const SHIPPING: Record<ShippingOption, { label: string; eta: string; price: number }> = {
   standard: { label: 'Frete Padrão', eta: '5 a 7 dias úteis', price: 14.9 },
   express: { label: 'Frete Expresso', eta: '1 a 2 dias úteis', price: 24.9 },
+  pickup: { label: 'Retirar na loja', eta: 'Allmart Paulista · 1,2 km · pronto em 2h', price: 0 },
 }
 
 const PIX_DISCOUNT_RATE = 0.05
@@ -95,7 +107,262 @@ const COUPONS: Record<string, Coupon> = {
 
 const brl = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
-function Collapse({ open, children, className = '' }: { open: boolean; children: ReactNode; className?: string }) {
+/* ------------------------------------------------------------------ */
+/* Motor de personalização                                             */
+/* Função pura: recebe sinais do comprador + regras do lojista e       */
+/* devolve o que o checkout deve mostrar, com o porquê de cada decisão. */
+/* Em produção isso seria um serviço (regras → modelo), aqui é local.   */
+/* ------------------------------------------------------------------ */
+
+type DecisionSource = 'motor' | 'lojista' | 'comprador'
+type Decision = {
+  source: DecisionSource
+  signal: string
+  action: string
+  hypothesis?: string
+  kpi?: string
+  guardrail?: string
+}
+
+const MIN_INSTALLMENT_VALUE = 50
+const INSTALLMENT_TIERS = [
+  { from: 0, max: 3 },
+  { from: 300, max: 6 },
+  { from: 500, max: 10 },
+]
+const THRESHOLD_NUDGE_WINDOW = 100
+
+const tierFor = (value: number) => [...INSTALLMENT_TIERS].reverse().find((t) => value >= t.from) ?? INSTALLMENT_TIERS[0]
+const nextTierFor = (value: number) => INSTALLMENT_TIERS.find((t) => t.from > value)
+
+function methodOrderFor(profile: BuyerProfile, device: Device, enabled: EnabledMethods): PaymentMethod[] {
+  const preferred = PREFERRED_METHOD[profile]
+  let order: PaymentMethod[]
+  if (preferred === 'pix') order = ['pix', 'card', 'koin']
+  else if (preferred === 'card') order = ['card', 'pix', 'koin']
+  else order = device === 'mobile' ? ['pix', 'card', 'koin'] : ['card', 'pix', 'koin']
+  return order.filter((m) => enabled[m])
+}
+
+function defaultMethodsFor(profile: BuyerProfile, device: Device, enabled: EnabledMethods): PaymentMethod[] {
+  const order = methodOrderFor(profile, device, enabled)
+  if (order.length === 1) return order
+  const preferred = PREFERRED_METHOD[profile]
+  if (!preferred) return []
+  return enabled[preferred] ? [preferred] : order.slice(0, 1)
+}
+
+type EngineInput = {
+  profile: BuyerProfile
+  device: Device
+  enabled: EnabledMethods
+  paymentMix: boolean
+  pickup: boolean
+  selectedMethods: PaymentMethod[]
+  cartValue: number
+  cardAmount: number
+  shippingAlreadyFree: boolean
+}
+
+type EngineOutput = {
+  methodOrder: PaymentMethod[]
+  mixAvailable: boolean
+  pixNudge: boolean
+  warrantyUpsell: boolean
+  pixMode: 'qr' | 'copy'
+  maxInstallments: number
+  installmentsLimitedByMin: boolean
+  thresholdNudge: { missing: number; max: number } | null
+  pickupAvailable: boolean
+  pickupRecommended: boolean
+  decisions: Decision[]
+}
+
+function runEngine(i: EngineInput): EngineOutput {
+  const decisions: Decision[] = []
+  const methodOrder = methodOrderFor(i.profile, i.device, i.enabled)
+  const preferred = PREFERRED_METHOD[i.profile]
+
+  // 1. Segmento do comprador
+  if (i.profile === 'new') {
+    decisions.push({
+      source: 'motor',
+      signal: 'segment = new_user',
+      action: 'mount(signup_lite) + lock(shipping.express = free)',
+      hypothesis: 'Tirar fricção e risco percebido da primeira compra',
+      kpi: 'conversão de 1ª compra',
+      guardrail: 'custo de frete por pedido',
+    })
+  }
+  if (preferred && !i.enabled[preferred]) {
+    decisions.push({
+      source: 'motor',
+      signal: `segment = ${preferred}_affinity · merchant.${preferred} = off`,
+      action: methodOrder[0] ? `fallback → expand(${methodOrder[0]})` : 'fallback → nenhum método disponível',
+      hypothesis: 'A preferência do comprador nunca sobrepõe o que a loja aceita',
+    })
+  } else if (i.profile === 'card') {
+    decisions.push({
+      source: 'motor',
+      signal: 'segment = card_affinity',
+      action: 'expand(card) + installments.default = máx. sem juros',
+      hypothesis: 'Comprador de cartão decide pelo valor da parcela',
+      kpi: 'conversão em cartão',
+      guardrail: 'custo de parcelamento (MDR)',
+    })
+  } else if (i.profile === 'pix') {
+    decisions.push({
+      source: 'motor',
+      signal: 'segment = pix_affinity',
+      action: 'expand(pix) + inject(upsell_warranty, 1-click)',
+      hypothesis: 'Pix custa menos ao lojista → margem para oferecer um attach',
+      kpi: 'attach rate de garantia · AOV',
+      guardrail: 'conversão',
+    })
+  }
+
+  const pixNudge = i.profile === 'card' && i.enabled.pix
+  if (i.profile === 'card') {
+    decisions.push(
+      i.enabled.pix
+        ? {
+            source: 'motor',
+            signal: 'segment = card_affinity · merchant.pix = on',
+            action: 'inject(pix_nudge: "economize fechando no Pix")',
+            hypothesis: 'Migrar parte do volume de cartão para Pix reduz MDR',
+            kpi: 'share de Pix',
+            guardrail: 'conversão total',
+          }
+        : {
+            source: 'motor',
+            signal: 'merchant.pix = off',
+            action: 'suppress(pix_nudge) → reforçar parcelamento sem juros',
+            hypothesis: 'Sem Pix, a alavanca de conversão passa a ser a parcela',
+          },
+    )
+  }
+
+  // 2. Dispositivo (sinal em tempo real)
+  const pixMode = i.device === 'mobile' ? 'copy' : 'qr'
+  if (i.enabled.pix) {
+    decisions.push({
+      source: 'motor',
+      signal: `device = ${i.device}`,
+      action:
+        i.device === 'mobile'
+          ? `pix.mode = copia_e_cola${!preferred ? ' + order(pix primeiro)' : ''}`
+          : 'pix.mode = qr_code',
+      hypothesis:
+        i.device === 'mobile'
+          ? 'QR Code não é escaneável na mesma tela do celular'
+          : 'No desktop, o QR é o caminho mais rápido até o app do banco',
+      kpi: 'Pix gerado → Pix pago',
+    })
+  }
+
+  // 3. Valor do carrinho → política de parcelamento (sinal em tempo real)
+  const tier = tierFor(i.cartValue)
+  const byMinInstallment = Math.max(1, Math.floor(i.cardAmount / MIN_INSTALLMENT_VALUE))
+  const maxInstallments = Math.min(tier.max, byMinInstallment)
+  const installmentsLimitedByMin = byMinInstallment < tier.max
+  const cardRelevant = i.enabled.card && (i.profile === 'card' || i.selectedMethods.includes('card'))
+  let thresholdNudge: EngineOutput['thresholdNudge'] = null
+
+  if (i.enabled.card) {
+    decisions.push({
+      source: 'motor',
+      signal: `cart.value = ${brl(i.cartValue)}`,
+      action: `card.installments ≤ ${maxInstallments}x sem juros${
+        installmentsLimitedByMin ? ` (parcela mín. ${brl(MIN_INSTALLMENT_VALUE)})` : ''
+      }`,
+      hypothesis: 'Parcelas proporcionais ao ticket: não subsidiar juros em pedido pequeno',
+      kpi: 'conversão em cartão',
+      guardrail: 'custo de parcelamento / GMV',
+    })
+    const next = nextTierFor(i.cartValue)
+    if (cardRelevant && next && next.from - i.cartValue <= THRESHOLD_NUDGE_WINDOW) {
+      thresholdNudge = { missing: next.from - i.cartValue, max: next.max }
+      decisions.push({
+        source: 'motor',
+        signal: `cart.value a ${brl(next.from - i.cartValue)} da próxima faixa`,
+        action: `inject(threshold_nudge: "faltam ${brl(next.from - i.cartValue)} para ${next.max}x")`,
+        hypothesis: 'Uma meta de parcelamento próxima estimula adicionar um item',
+        kpi: 'AOV',
+        guardrail: 'abandono de checkout',
+      })
+    }
+  }
+
+  // 4. Regras do lojista que dependem de contexto
+  const mixAvailable = i.paymentMix && methodOrder.length >= 2
+  if (i.paymentMix && !mixAvailable) {
+    decisions.push({
+      source: 'motor',
+      signal: 'merchant.payment_mix = on · < 2 métodos aceitos',
+      action: 'suppress(payment_mix)',
+      hypothesis: 'Não oferecer uma combinação que o comprador não consegue fazer',
+    })
+  }
+  if (methodOrder.length === 1) {
+    decisions.push({
+      source: 'motor',
+      signal: `merchant aceita só ${METHOD_LABEL[methodOrder[0]]}`,
+      action: `autoselect(${methodOrder[0]})`,
+      hypothesis: 'Menos cliques quando não existe escolha a fazer',
+    })
+  }
+
+  const pickupAvailable = i.pickup && i.profile !== 'new'
+  const pickupRecommended = pickupAvailable && !i.shippingAlreadyFree
+  if (i.pickup) {
+    decisions.push(
+      pickupAvailable
+        ? {
+            source: 'motor',
+            signal: 'address.cep = 01304-001 · loja a 1,2 km',
+            action: pickupRecommended
+              ? 'offer(pickup) + rank(1) + badge("recomendado")'
+              : 'offer(pickup) sem destaque · frete já é grátis',
+            hypothesis: 'Retirada zera o frete e entrega no mesmo dia',
+            kpi: 'share de retirada · custo logístico',
+            guardrail: 'NPS de entrega',
+          }
+        : {
+            source: 'motor',
+            signal: 'segment = new_user · endereço desconhecido',
+            action: 'hide(pickup) · frete expresso grátis já aplicado',
+            hypothesis: 'Sem CEP não dá para garantir uma loja próxima',
+          },
+    )
+  }
+
+  return {
+    methodOrder,
+    mixAvailable,
+    pixNudge,
+    warrantyUpsell: i.profile === 'pix',
+    pixMode,
+    maxInstallments,
+    installmentsLimitedByMin,
+    thresholdNudge,
+    pickupAvailable,
+    pickupRecommended,
+    decisions,
+  }
+}
+
+function Collapse({
+  open,
+  children,
+  className = '',
+  innerClassName,
+}: {
+  open: boolean
+  children: ReactNode
+  className?: string
+  // Espaçamento aplicado dentro da área recolhível: some junto quando fechado.
+  innerClassName?: string
+}) {
   return (
     <div
       className={`grid transition-[grid-template-rows,opacity] duration-500 ease-out ${
@@ -104,7 +371,9 @@ function Collapse({ open, children, className = '' }: { open: boolean; children:
       aria-hidden={!open}
       inert={!open}
     >
-      <div className="min-h-0 overflow-hidden">{children}</div>
+      <div className="min-h-0 overflow-hidden">
+        {innerClassName ? <div className={innerClassName}>{children}</div> : children}
+      </div>
     </div>
   )
 }
@@ -123,19 +392,27 @@ function WhatsAppIcon({ className = '' }: { className?: string }) {
 }
 
 export default function ModularCheckout() {
+  // Camada 1 · sinais do comprador
   const [profile, setProfile] = useState<BuyerProfile>('card')
+  const [device, setDevice] = useState<Device>('desktop')
+
+  // Camada 2 · regras do lojista
+  const [enabledMethods, setEnabledMethods] = useState<EnabledMethods>({ pix: true, card: true, koin: true })
   const [toggles, setToggles] = useState<Toggles>({
     paymentMix: false,
     socialShare: false,
     vtexAds: false,
     saveForLater: false,
     coupons: false,
+    pickup: false,
   })
+
+  // Estado da sessão de checkout
   const [methods, setMethods] = useState<PaymentMethod[]>(['card'])
   const [split, setSplit] = useState(50)
   const [shipping, setShipping] = useState<ShippingOption>('standard')
   const [warranty, setWarranty] = useState(false)
-  const [installments, setInstallments] = useState('1')
+  const [installmentsChoice, setInstallmentsChoice] = useState<number | null>(null)
   const [placed, setPlaced] = useState(false)
   const [wantsSocialShare, setWantsSocialShare] = useState(false)
   const [cartItems, setCartItems] = useState<CartItem[]>(CART)
@@ -144,17 +421,24 @@ export default function ModularCheckout() {
   const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null)
   const [couponError, setCouponError] = useState('')
 
+  // O dispositivo real é o ponto de partida; o painel permite simular o outro.
+  useEffect(() => {
+    if (window.matchMedia('(max-width: 767px)').matches) setDevice('mobile')
+  }, [])
+
   const isNewUser = profile === 'new'
   const hasFreeShippingUnlock = isNewUser || cartItems.some((i) => i.upsell)
-  const isSplit = toggles.paymentMix && methods.length === MAX_MIXED_METHODS
+  const couponFreeShipping = toggles.coupons && appliedCoupon?.type === 'shipping'
+  const cartValue = cartItems.reduce((sum, item) => sum + item.price, 0)
+  const mixAllowed = toggles.paymentMix && Object.values(enabledMethods).filter(Boolean).length >= 2
+  const isSplit = mixAllowed && methods.length === MAX_MIXED_METHODS
 
   const resetCheckout = (nextProfile: BuyerProfile = profile) => {
-    const preferred = PREFERRED_METHOD[nextProfile]
-    setMethods(preferred ? [preferred] : [])
+    setMethods(defaultMethodsFor(nextProfile, device, enabledMethods))
     setSplit(50)
     setShipping('standard')
     setWarranty(false)
-    setInstallments('1')
+    setInstallmentsChoice(null)
     setPlaced(false)
     setWantsSocialShare(false)
     setCartItems(CART)
@@ -169,10 +453,28 @@ export default function ModularCheckout() {
     resetCheckout(next)
   }
 
+  const changeDevice = (next: Device) => {
+    setDevice(next)
+    setPlaced(false)
+  }
+
+  const setMethodEnabled = (method: PaymentMethod, value: boolean) => {
+    const next = { ...enabledMethods, [method]: value }
+    if (!Object.values(next).some(Boolean)) return
+    setEnabledMethods(next)
+    setMethods((current) => {
+      const kept = current.filter((m) => next[m])
+      return kept.length ? kept : defaultMethodsFor(profile, device, next)
+    })
+    setSplit(50)
+    setPlaced(false)
+  }
+
   const setToggle = (key: keyof Toggles, value: boolean) => {
     setToggles((t) => ({ ...t, [key]: value }))
     if (key === 'paymentMix' && !value) setMethods((m) => m.slice(0, 1))
     if (key === 'socialShare' && !value) setWantsSocialShare(false)
+    if (key === 'pickup' && !value && shipping === 'pickup') setShipping('standard')
     if (key === 'coupons' && !value) {
       setAppliedCoupon(null)
       setCouponInput('')
@@ -227,7 +529,7 @@ export default function ModularCheckout() {
   }
 
   const toggleMethod = (method: PaymentMethod) => {
-    if (!toggles.paymentMix) {
+    if (!mixAllowed) {
       setMethods([method])
       return
     }
@@ -240,7 +542,7 @@ export default function ModularCheckout() {
   }
 
   const nudgeToPix = () => {
-    if (toggles.paymentMix && methods.length < MAX_MIXED_METHODS && !methods.includes('pix')) {
+    if (mixAllowed && methods.length < MAX_MIXED_METHODS && !methods.includes('pix')) {
       setMethods((m) => [...m, 'pix'])
     } else {
       setMethods(['pix'])
@@ -248,9 +550,8 @@ export default function ModularCheckout() {
   }
 
   const totals = useMemo(() => {
-    const subtotal = cartItems.reduce((sum, item) => sum + item.price, 0)
+    const subtotal = cartValue
     const warrantyValue = warranty ? WARRANTY_PRICE : 0
-    const couponFreeShipping = toggles.coupons && appliedCoupon?.type === 'shipping'
     const shippingValue = hasFreeShippingUnlock || couponFreeShipping ? 0 : SHIPPING[shipping].price
     const base = subtotal + warrantyValue + shippingValue
 
@@ -299,12 +600,13 @@ export default function ModularCheckout() {
       amounts,
     }
   }, [
+    cartValue,
     warranty,
     hasFreeShippingUnlock,
+    couponFreeShipping,
     shipping,
     methods,
     split,
-    cartItems,
     toggles.coupons,
     appliedCoupon,
     toggles.socialShare,
@@ -313,24 +615,84 @@ export default function ModularCheckout() {
 
   const amountFor = (m: PaymentMethod) => totals.amounts.find((a) => a.method === m)?.amount ?? totals.total
 
-  const agentDecisions = useMemo(() => {
-    const log: string[] = []
-    if (profile === 'card') log.push('card_affinity → expand(card) + inject(pix_nudge) · reduz MDR')
-    if (profile === 'pix') log.push('pix_affinity → expand(pix) + inject(upsell_warranty) · +AOV')
-    if (profile === 'new') log.push('new_user → mount(signup_lite) + lock(shipping.express = free) · ativação')
-    if (toggles.vtexAds) log.push('mod.vtex_ads → clientProfileData.segment → mount(sponsored_recommendation) · personalização por perfil')
-    if (toggles.paymentMix) log.push(`mod.payment_mix → mode(multi, max=${MAX_MIXED_METHODS}) + mount(split_slider)`)
-    if (toggles.socialShare) log.push('mod.social_share → checkout.mount(opt_in_toggle) · disponível para o cliente escolher')
+  // Camada 3 · decisões do motor
+  const engine = useMemo(
+    () =>
+      runEngine({
+        profile,
+        device,
+        enabled: enabledMethods,
+        paymentMix: toggles.paymentMix,
+        pickup: toggles.pickup,
+        selectedMethods: methods,
+        cartValue,
+        cardAmount: amountFor('card'),
+        shippingAlreadyFree: hasFreeShippingUnlock || !!couponFreeShipping,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [profile, device, enabledMethods, toggles.paymentMix, toggles.pickup, methods, cartValue, totals, hasFreeShippingUnlock, couponFreeShipping],
+  )
+
+  const installmentCount = Math.min(
+    installmentsChoice ?? (profile === 'card' ? engine.maxInstallments : 1),
+    engine.maxInstallments,
+  )
+
+  const decisions = useMemo(() => {
+    const log: Decision[] = [...engine.decisions]
+    if (toggles.vtexAds)
+      log.push({
+        source: 'lojista',
+        signal: 'app vtex_ads = on · segment',
+        action: 'mount(sponsored_ad) + mount(cross_sell → frete grátis)',
+        hypothesis: 'Receita de retail media no momento de maior intenção de compra',
+        kpi: 'receita de Ads · CTR',
+        guardrail: 'conversão do checkout',
+      })
+    if (toggles.socialShare)
+      log.push({
+        source: 'lojista',
+        signal: 'module social_share = on',
+        action: 'mount(opt_in: dividir com um amigo)',
+        hypothesis: 'Dividir o pagamento destrava compras acima do orçamento individual',
+        kpi: 'conversão · novos compradores via link',
+        guardrail: 'pedidos não concluídos pelo amigo',
+      })
+    if (toggles.saveForLater)
+      log.push({
+        source: 'lojista',
+        signal: 'app save_for_later = on',
+        action: 'mount(cart.save_action)',
+        hypothesis: 'Tirar um item é melhor do que abandonar o carrinho inteiro',
+        kpi: 'recuperação de itens salvos',
+      })
+    if (toggles.coupons)
+      log.push({ source: 'lojista', signal: 'module coupons = on', action: 'mount(coupon_input)' })
     if (toggles.socialShare && wantsSocialShare)
-      log.push('client.social_share = true → post_purchase.mount(share_link, ttl=2h) · viral loop')
-    if (toggles.saveForLater) log.push('mod.save_for_later → cart.mount(save_action) · retenção')
+      log.push({
+        source: 'comprador',
+        signal: 'social_share.opt_in = true',
+        action: 'pricing.customer_share = 50% · post_purchase.mount(share_link, ttl=2h)',
+      })
     if (toggles.vtexAds && cartItems.some((i) => i.upsell))
-      log.push('client.cross_sell_added → shipping.override(free) · +AOV via vtex_ads')
-    if (toggles.coupons) log.push('mod.coupons → checkout.mount(coupon_input) · disponível para o cliente')
+      log.push({ source: 'comprador', signal: 'cross_sell.added', action: 'shipping.override(free)' })
     if (toggles.coupons && appliedCoupon)
-      log.push(`client.coupon_applied(${appliedCoupon.code}) → pricing.override(${appliedCoupon.type}) · -${appliedCoupon.type === 'percent' ? `${appliedCoupon.value * 100}%` : 'frete'}`)
+      log.push({
+        source: 'comprador',
+        signal: `coupon = ${appliedCoupon.code}`,
+        action: `pricing.override(${appliedCoupon.type === 'percent' ? `-${appliedCoupon.value * 100}%` : 'frete grátis'})`,
+      })
     return log
-  }, [profile, toggles, wantsSocialShare, cartItems, appliedCoupon])
+  }, [engine, toggles, wantsSocialShare, cartItems, appliedCoupon])
+
+  const shippingLabel =
+    shipping === 'pickup'
+      ? 'Retirada na loja · Allmart Paulista'
+      : isNewUser
+        ? 'Frete Expresso · Grátis'
+        : totals.shippingValue === 0
+          ? `${SHIPPING[shipping].label} · Grátis`
+          : `${SHIPPING[shipping].label} · ${brl(totals.shippingValue)}`
 
   const confirmOrder = () => {
     setPlaced(true)
@@ -342,9 +704,15 @@ export default function ModularCheckout() {
       <DebugPanel
         profile={profile}
         onProfileChange={changeProfile}
+        device={device}
+        onDeviceChange={changeDevice}
+        cartValue={cartValue}
+        maxInstallments={engine.maxInstallments}
+        enabledMethods={enabledMethods}
+        onMethodEnabled={setMethodEnabled}
         toggles={toggles}
         onToggle={setToggle}
-        decisions={agentDecisions}
+        decisions={decisions}
       />
 
       <header className="border-b bg-background">
@@ -379,15 +747,22 @@ export default function ModularCheckout() {
           amounts={totals.amounts}
           total={totals.total}
           friendAmount={totals.friendAmount}
-          installments={Number(installments)}
+          installments={installmentCount}
           socialShare={toggles.socialShare && wantsSocialShare}
-          shippingLabel={hasFreeShippingUnlock ? 'Frete Expresso · Grátis' : `${SHIPPING[shipping].label} · ${brl(totals.shippingValue)}`}
+          shippingLabel={shippingLabel}
+          pixMode={engine.pixMode}
           onBack={() => resetCheckout()}
         />
       ) : (
-        <main className="mx-auto grid max-w-6xl gap-6 px-4 py-6 md:px-6 lg:grid-cols-[1fr_400px] lg:py-10">
+        <main className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-6 md:px-6 lg:grid-cols-[minmax(0,1fr)_400px] lg:py-10">
           <div className="flex flex-col gap-8">
-            <DeliverySection isNewUser={isNewUser} shipping={shipping} onShippingChange={setShipping} />
+            <DeliverySection
+              isNewUser={isNewUser}
+              shipping={shipping}
+              onShippingChange={setShipping}
+              pickupAvailable={engine.pickupAvailable}
+              pickupRecommended={engine.pickupRecommended}
+            />
 
             <Collapse open={toggles.vtexAds}>
               <VtexAdsBanner profile={profile} />
@@ -400,114 +775,149 @@ export default function ModularCheckout() {
                     Pagamento
                   </h2>
                   <p className="text-sm text-muted-foreground">
-                    {toggles.paymentMix
+                    {engine.mixAvailable
                       ? `Combine até ${MAX_MIXED_METHODS} meios de pagamento.`
                       : 'Escolha como deseja pagar o seu pedido.'}
                   </p>
                 </div>
-                {toggles.paymentMix && <ExtensionBadge label="payment-mix" />}
+                {engine.mixAvailable && <ExtensionBadge label="payment-mix" />}
               </div>
 
               <div
                 className="overflow-hidden rounded-xl border bg-background"
-                role={toggles.paymentMix ? 'group' : 'radiogroup'}
+                role={engine.mixAvailable ? 'group' : 'radiogroup'}
                 aria-label="Meios de pagamento"
               >
-                <PaymentOption
-                  id="pix"
-                  icon={QrCode}
-                  title="Pix"
-                  description="5% de desconto · aprovação imediata"
-                  badge="-5%"
-                  multi={toggles.paymentMix}
-                  selected={methods.includes('pix')}
-                  disabled={isMethodLocked('pix', methods, toggles.paymentMix)}
-                  onSelect={() => toggleMethod('pix')}
-                >
-                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                    <div className="flex size-24 shrink-0 items-center justify-center rounded-lg border bg-muted">
-                      <QrCode className="size-14 text-foreground/80" aria-hidden="true" />
-                    </div>
-                    <div className="text-sm">
-                      <p className="font-medium">
-                        Valor no Pix: <span className="text-success tabular-nums">{brl(amountFor('pix'))}</span>
-                      </p>
-                      <p className="text-muted-foreground">O QR Code é gerado após confirmar. Válido por 10 minutos.</p>
-                    </div>
-                  </div>
-                  <Collapse open={profile === 'pix'}>
-                    <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border bg-muted/50 p-4">
-                      <div className="flex items-start gap-3">
-                        <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
-                        <div>
-                          <p className="text-sm font-semibold">Adicionar Garantia Estendida por + {brl(WARRANTY_PRICE)}</p>
-                          <p className="text-xs text-muted-foreground">12 meses extras de cobertura para o seu pedido.</p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setWarranty((w) => !w)}
-                        aria-pressed={warranty}
-                        className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                          warranty ? 'bg-foreground text-background' : 'border bg-background text-foreground hover:bg-muted'
-                        }`}
-                      >
-                        {warranty ? <Check className="size-4" aria-hidden="true" /> : <Plus className="size-4" aria-hidden="true" />}
-                        {warranty ? 'Adicionada' : '1-click'}
-                      </button>
-                    </div>
-                  </Collapse>
-                </PaymentOption>
+                {engine.methodOrder.map((method, index) => {
+                  const last = index === engine.methodOrder.length - 1
+                  const common = {
+                    multi: engine.mixAvailable,
+                    selected: methods.includes(method),
+                    disabled: isMethodLocked(method, methods, engine.mixAvailable),
+                    onSelect: () => toggleMethod(method),
+                    last,
+                  }
 
-                <PaymentOption
-                  id="card"
-                  icon={CreditCard}
-                  title="Cartão de Crédito"
-                  description="Até 10x sem juros"
-                  multi={toggles.paymentMix}
-                  selected={methods.includes('card')}
-                  disabled={isMethodLocked('card', methods, toggles.paymentMix)}
-                  onSelect={() => toggleMethod('card')}
-                >
-                  <CardForm amount={amountFor('card')} installments={installments} onInstallmentsChange={setInstallments} />
-                  <Collapse open={profile === 'card' && !methods.includes('pix')}>
-                    <div className="mt-4 flex flex-col gap-3 rounded-lg border border-success/30 bg-success/10 p-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex items-start gap-3">
-                        <TrendingDown className="mt-0.5 size-5 shrink-0 text-success" aria-hidden="true" />
-                        <div>
-                          <p className="text-sm font-semibold text-success">Economize {brl(totals.pixSavings)} fechando no Pix agora</p>
-                          <p className="text-xs text-muted-foreground">Aprovação instantânea e 5% de desconto no total.</p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={nudgeToPix}
-                        className="shrink-0 rounded-md bg-success px-3 py-2 text-sm font-medium text-success-foreground transition-opacity hover:opacity-90"
+                  if (method === 'pix')
+                    return (
+                      <PaymentOption
+                        key="pix"
+                        id="pix"
+                        icon={QrCode}
+                        title="Pix"
+                        description={
+                          engine.pixMode === 'copy'
+                            ? '5% de desconto · copia e cola no app do banco'
+                            : '5% de desconto · aprovação imediata'
+                        }
+                        badge="-5%"
+                        {...common}
                       >
-                        {toggles.paymentMix && methods.length < MAX_MIXED_METHODS ? 'Combinar com Pix' : 'Mudar para Pix'}
-                      </button>
-                    </div>
-                  </Collapse>
-                </PaymentOption>
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                          <div className="flex size-24 shrink-0 items-center justify-center rounded-lg border bg-muted">
+                            {engine.pixMode === 'copy' ? (
+                              <Copy className="size-10 text-foreground/80" aria-hidden="true" />
+                            ) : (
+                              <QrCode className="size-14 text-foreground/80" aria-hidden="true" />
+                            )}
+                          </div>
+                          <div className="text-sm">
+                            <p className="font-medium">
+                              Valor no Pix: <span className="text-success tabular-nums">{brl(amountFor('pix'))}</span>
+                            </p>
+                            <p className="text-muted-foreground">
+                              {engine.pixMode === 'copy'
+                                ? 'Depois de confirmar, você copia o código e cola no app do seu banco. Válido por 10 minutos.'
+                                : 'O QR Code é gerado após confirmar. Válido por 10 minutos.'}
+                            </p>
+                          </div>
+                        </div>
+                      </PaymentOption>
+                    )
 
-                <PaymentOption
-                  id="koin"
-                  icon={Wallet}
-                  title="Koin"
-                  description="Buy Now, Pay Later · 4x sem juros"
-                  badge="BNPL"
-                  multi={toggles.paymentMix}
-                  selected={methods.includes('koin')}
-                  disabled={isMethodLocked('koin', methods, toggles.paymentMix)}
-                  onSelect={() => toggleMethod('koin')}
-                  last
-                >
-                  <KoinPlan amount={amountFor('koin')} />
-                </PaymentOption>
+                  if (method === 'card')
+                    return (
+                      <PaymentOption
+                        key="card"
+                        id="card"
+                        icon={CreditCard}
+                        title="Cartão de Crédito"
+                        description={
+                          engine.maxInstallments > 1 ? `Até ${engine.maxInstallments}x sem juros` : 'À vista'
+                        }
+                        {...common}
+                      >
+                        <CardForm
+                          amount={amountFor('card')}
+                          maxInstallments={engine.maxInstallments}
+                          limitedByMin={engine.installmentsLimitedByMin}
+                          installments={installmentCount}
+                          onInstallmentsChange={setInstallmentsChoice}
+                        />
+                        <Collapse open={engine.pixNudge && !methods.includes('pix')}>
+                          <div className="mt-4 flex flex-col gap-3 rounded-lg border border-success/30 bg-success/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex items-start gap-3">
+                              <TrendingDown className="mt-0.5 size-5 shrink-0 text-success" aria-hidden="true" />
+                              <div>
+                                <p className="text-sm font-semibold text-success">
+                                  Economize {brl(totals.pixSavings)} fechando no Pix agora
+                                </p>
+                                <p className="text-xs text-muted-foreground">Aprovação instantânea e 5% de desconto no total.</p>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={nudgeToPix}
+                              className="shrink-0 rounded-md bg-success px-3 py-2 text-sm font-medium text-success-foreground transition-opacity hover:opacity-90"
+                            >
+                              {engine.mixAvailable && methods.length < MAX_MIXED_METHODS ? 'Combinar com Pix' : 'Mudar para Pix'}
+                            </button>
+                          </div>
+                        </Collapse>
+                      </PaymentOption>
+                    )
+
+                  return (
+                    <PaymentOption
+                      key="koin"
+                      id="koin"
+                      icon={Wallet}
+                      title="Koin"
+                      description="Buy Now, Pay Later · 4x sem juros"
+                      badge="BNPL"
+                      {...common}
+                    >
+                      <KoinPlan amount={amountFor('koin')} />
+                    </PaymentOption>
+                  )
+                })}
               </div>
 
               <Collapse open={isSplit}>
                 <SplitSlider split={split} onSplitChange={setSplit} amounts={totals.amounts} />
+              </Collapse>
+
+              <Collapse open={engine.warrantyUpsell}>
+                <div className="flex items-center justify-between gap-3 rounded-xl border bg-background p-4">
+                  <div className="flex items-start gap-3">
+                    <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
+                    <div>
+                      <p className="text-sm font-semibold">Adicionar Garantia Estendida por + {brl(WARRANTY_PRICE)}</p>
+                      <p className="text-xs text-muted-foreground">12 meses extras de cobertura para o seu pedido.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setWarranty((w) => !w)}
+                    aria-pressed={warranty}
+                    className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                      warranty ? 'bg-foreground text-background' : 'border bg-background text-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {warranty ? <Check className="size-4" aria-hidden="true" /> : <Plus className="size-4" aria-hidden="true" />}
+                    {warranty ? 'Adicionada' : '1-click'}
+                  </button>
+                </div>
               </Collapse>
 
               <Collapse open={toggles.socialShare}>
@@ -538,10 +948,11 @@ export default function ModularCheckout() {
 
           <OrderSummary
             totals={totals}
-            isNewUser={isNewUser}
             warranty={warranty}
             isSplit={isSplit}
-            installments={methods.length === 1 && methods[0] === 'card' ? Number(installments) : 1}
+            installments={methods.length === 1 && methods[0] === 'card' ? installmentCount : 1}
+            thresholdNudge={engine.thresholdNudge}
+            isPickup={shipping === 'pickup'}
             canConfirm={methods.length > 0 && cartItems.length > 0}
             onConfirm={confirmOrder}
             cartItems={cartItems}
@@ -569,117 +980,241 @@ function isMethodLocked(method: PaymentMethod, methods: PaymentMethod[], multi: 
   return multi && methods.length >= MAX_MIXED_METHODS && !methods.includes(method)
 }
 
+const SOURCE_STYLE: Record<DecisionSource, string> = {
+  motor: 'border-emerald-400/40 text-emerald-300',
+  lojista: 'border-sky-400/40 text-sky-300',
+  comprador: 'border-amber-400/40 text-amber-300',
+}
+
+function PanelLayer({ step, title, subtitle, children }: { step: number; title: string; subtitle: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <div>
+        <p className="flex items-center gap-2 text-xs font-semibold text-zinc-100">
+          <span className="flex size-5 items-center justify-center rounded-full bg-white/10 font-mono text-[10px]">{step}</span>
+          {title}
+        </p>
+        <p className="mt-0.5 pl-7 text-[11px] text-zinc-500">{subtitle}</p>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function PanelGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <fieldset className="flex flex-col gap-1.5">
+      <legend className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">{label}</legend>
+      <div className="flex flex-wrap gap-1.5">{children}</div>
+    </fieldset>
+  )
+}
+
+function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string; icon?: typeof Share2 }[]
+  value: T
+  onChange: (v: T) => void
+}) {
+  return (
+    <>
+      {options.map((opt) => {
+        const Icon = opt.icon
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            aria-pressed={value === opt.value}
+            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+              value === opt.value
+                ? 'border-emerald-400/50 bg-emerald-400/10 text-emerald-300'
+                : 'border-white/10 bg-white/5 text-zinc-400 hover:text-zinc-100'
+            }`}
+          >
+            {Icon && <Icon className="size-3.5" aria-hidden="true" />}
+            {opt.label}
+          </button>
+        )
+      })}
+    </>
+  )
+}
+
 function DebugPanel({
   profile,
   onProfileChange,
+  device,
+  onDeviceChange,
+  cartValue,
+  maxInstallments,
+  enabledMethods,
+  onMethodEnabled,
   toggles,
   onToggle,
   decisions,
 }: {
   profile: BuyerProfile
   onProfileChange: (p: BuyerProfile) => void
+  device: Device
+  onDeviceChange: (d: Device) => void
+  cartValue: number
+  maxInstallments: number
+  enabledMethods: EnabledMethods
+  onMethodEnabled: (m: PaymentMethod, v: boolean) => void
   toggles: Toggles
   onToggle: (key: keyof Toggles, value: boolean) => void
-  decisions: string[]
+  decisions: Decision[]
 }) {
   const [showLog, setShowLog] = useState(true)
+  const enabledCount = Object.values(enabledMethods).filter(Boolean).length
 
   return (
-    <section aria-label="Painel de simulação do orderForm" className="border-b border-white/10 bg-zinc-950 text-zinc-300">
+    <section aria-label="Painel de simulação" className="border-b border-white/10 bg-zinc-950 text-zinc-300">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-4 md:px-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 font-mono text-xs">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs">
             <Terminal className="size-4 text-emerald-400" aria-hidden="true" />
             <span className="font-semibold uppercase tracking-wider text-zinc-100">Debug Mode</span>
-            <span className="text-zinc-500">· orderForm context simulator</span>
+            <span className="text-zinc-500">· o lojista define as regras, o motor personaliza dentro delas</span>
           </div>
           <button
             type="button"
             onClick={() => setShowLog((s) => !s)}
             aria-expanded={showLog}
-            className="flex items-center gap-1 font-mono text-xs text-zinc-400 hover:text-zinc-100"
+            className="flex shrink-0 items-center gap-1 font-mono text-xs text-zinc-400 hover:text-zinc-100"
           >
-            <Bot className="size-3.5" aria-hidden="true" /> agent log
+            <Bot className="size-3.5" aria-hidden="true" /> decisões
             <ChevronDown className={`size-3.5 transition-transform ${showLog ? 'rotate-180' : ''}`} aria-hidden="true" />
           </button>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <fieldset className="flex flex-col gap-2">
-            <legend className="mb-2 font-mono text-[11px] uppercase tracking-wider text-zinc-500">clientProfileData.segment</legend>
-            <div className="flex flex-wrap gap-1.5">
-              {PROFILE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => onProfileChange(opt.value)}
-                  aria-pressed={profile === opt.value}
-                  className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-                    profile === opt.value
-                      ? 'border-emerald-400/50 bg-emerald-400/10 text-emerald-300'
-                      : 'border-white/10 bg-white/5 text-zinc-400 hover:text-zinc-100'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            <div className="mt-1 flex flex-wrap gap-2">
-              <DebugToggle
-                label="Habilitar VTEX Ads"
-                icon={Megaphone}
-                checked={toggles.vtexAds}
-                onChange={(v) => onToggle('vtexAds', v)}
+        <div className="grid gap-3 lg:grid-cols-[1fr_1.35fr]">
+          <PanelLayer step={1} title="Sinais do comprador" subtitle="Quem está comprando e em que contexto">
+            <PanelGroup label="clientProfileData · segmento">
+              <Segmented options={PROFILE_OPTIONS} value={profile} onChange={onProfileChange} />
+            </PanelGroup>
+            <PanelGroup label="tempo real · dispositivo">
+              <Segmented
+                options={[
+                  { value: 'mobile', label: 'Mobile', icon: Smartphone },
+                  { value: 'desktop', label: 'Desktop', icon: Monitor },
+                ]}
+                value={device}
+                onChange={onDeviceChange}
               />
-            </div>
-          </fieldset>
+            </PanelGroup>
+            <PanelGroup label="tempo real · valor do carrinho">
+              <span className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 font-mono text-xs text-zinc-200 tabular-nums">
+                {brl(cartValue)} → até {maxInstallments}x sem juros
+              </span>
+            </PanelGroup>
+          </PanelLayer>
 
-          <fieldset className="flex flex-col gap-2">
-            <legend className="mb-2 font-mono text-[11px] uppercase tracking-wider text-zinc-500">payment.modules</legend>
-            <div className="flex flex-wrap gap-2">
+          <PanelLayer step={2} title="Regras do lojista" subtitle="O que a loja aceita e quais apps estão instalados">
+            <PanelGroup label="payment.methods">
               <DebugToggle
-                label="Habilitar Mix de Pagamentos"
+                label="Pix"
+                icon={QrCode}
+                checked={enabledMethods.pix}
+                disabled={enabledMethods.pix && enabledCount === 1}
+                onChange={(v) => onMethodEnabled('pix', v)}
+              />
+              <DebugToggle
+                label="Cartão"
+                icon={CreditCard}
+                checked={enabledMethods.card}
+                disabled={enabledMethods.card && enabledCount === 1}
+                onChange={(v) => onMethodEnabled('card', v)}
+              />
+              <DebugToggle
+                label="Koin (BNPL)"
+                icon={Wallet}
+                checked={enabledMethods.koin}
+                disabled={enabledMethods.koin && enabledCount === 1}
+                onChange={(v) => onMethodEnabled('koin', v)}
+              />
+            </PanelGroup>
+            <PanelGroup label="payment.modules">
+              <DebugToggle
+                label="Mix de Pagamentos"
                 icon={SlidersHorizontal}
                 checked={toggles.paymentMix}
                 onChange={(v) => onToggle('paymentMix', v)}
               />
+              <DebugToggle label="Cupons" icon={Tag} checked={toggles.coupons} onChange={(v) => onToggle('coupons', v)} />
               <DebugToggle
-                label="Habilitar Cupons"
-                icon={Tag}
-                checked={toggles.coupons}
-                onChange={(v) => onToggle('coupons', v)}
-              />
-              <DebugToggle
-                label="Habilitar Social Share"
+                label="Social Share"
                 icon={Share2}
                 checked={toggles.socialShare}
                 onChange={(v) => onToggle('socialShare', v)}
               />
-            </div>
-          </fieldset>
-
-          <fieldset className="flex flex-col gap-2">
-            <legend className="mb-2 font-mono text-[11px] uppercase tracking-wider text-zinc-500">extra.apps</legend>
-            <div className="flex flex-wrap gap-2">
+            </PanelGroup>
+            <PanelGroup label="extra.apps">
+              <DebugToggle label="VTEX Ads" icon={Megaphone} checked={toggles.vtexAds} onChange={(v) => onToggle('vtexAds', v)} />
               <DebugToggle
-                label="Habilitar Save for Later"
+                label="Save for Later"
                 icon={Heart}
                 checked={toggles.saveForLater}
                 onChange={(v) => onToggle('saveForLater', v)}
               />
-            </div>
-          </fieldset>
+              <DebugToggle
+                label="Retirada na loja"
+                icon={Store}
+                checked={toggles.pickup}
+                onChange={(v) => onToggle('pickup', v)}
+              />
+            </PanelGroup>
+          </PanelLayer>
         </div>
 
         <Collapse open={showLog}>
-          <ul className="flex flex-col gap-1 rounded-md border border-white/10 bg-black/40 p-3 font-mono text-[11px]" aria-live="polite">
-            {decisions.map((d) => (
-              <li key={d} className="flex gap-2 animate-in fade-in slide-in-from-left-1 duration-300">
-                <Sparkles className="mt-0.5 size-3 shrink-0 text-emerald-400" aria-hidden="true" />
-                <span>{d}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="rounded-lg border border-white/10 bg-black/40 p-4">
+            <p className="mb-3 flex items-center gap-2 text-xs font-semibold text-zinc-100">
+              <span className="flex size-5 items-center justify-center rounded-full bg-white/10 font-mono text-[10px]">3</span>
+              Decisões do motor
+              <span className="font-normal text-zinc-500">· o que o checkout fez, por quê e como medimos</span>
+            </p>
+            <ul className="flex max-h-80 flex-col gap-2.5 overflow-y-auto font-mono text-[11px]" aria-live="polite">
+              {decisions.map((d) => (
+                <li
+                  key={`${d.source}-${d.signal}-${d.action}`}
+                  className="flex gap-2 animate-in fade-in slide-in-from-left-1 duration-300"
+                >
+                  <span
+                    className={`mt-px h-fit shrink-0 rounded border px-1.5 text-[9px] uppercase tracking-wider ${SOURCE_STYLE[d.source]}`}
+                  >
+                    {d.source}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-zinc-300">
+                      <span className="text-zinc-500">{d.signal}</span> <span className="text-zinc-600">→</span> {d.action}
+                    </p>
+                    {(d.hypothesis || d.kpi) && (
+                      <p className="mt-0.5 font-sans text-[11px] text-zinc-500">
+                        {d.hypothesis}
+                        {d.kpi && (
+                          <>
+                            {' · '}
+                            <span className="text-zinc-400">KPI:</span> {d.kpi}
+                          </>
+                        )}
+                        {d.guardrail && (
+                          <>
+                            {' · '}
+                            <span className="text-zinc-400">guardrail:</span> {d.guardrail}
+                          </>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         </Collapse>
       </div>
     </section>
@@ -690,11 +1225,13 @@ function DebugToggle({
   label,
   icon: Icon,
   checked,
+  disabled,
   onChange,
 }: {
   label: string
   icon: typeof Share2
   checked: boolean
+  disabled?: boolean
   onChange: (value: boolean) => void
 }) {
   return (
@@ -702,8 +1239,10 @@ function DebugToggle({
       type="button"
       role="switch"
       aria-checked={checked}
+      disabled={disabled}
+      title={disabled ? 'A loja precisa aceitar ao menos um método' : undefined}
       onClick={() => onChange(!checked)}
-      className={`flex items-center gap-2.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+      className={`flex items-center gap-2.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
         checked ? 'border-emerald-400/50 bg-emerald-400/10 text-emerald-300' : 'border-white/10 bg-white/5 text-zinc-400 hover:text-zinc-100'
       }`}
     >
@@ -778,11 +1317,21 @@ function DeliverySection({
   isNewUser,
   shipping,
   onShippingChange,
+  pickupAvailable,
+  pickupRecommended,
 }: {
   isNewUser: boolean
   shipping: ShippingOption
   onShippingChange: (s: ShippingOption) => void
+  pickupAvailable: boolean
+  pickupRecommended: boolean
 }) {
+  const shippingOptions: ShippingOption[] = pickupAvailable
+    ? pickupRecommended
+      ? ['pickup', 'standard', 'express']
+      : ['standard', 'express', 'pickup']
+    : ['standard', 'express']
+
   return (
     <section aria-labelledby="delivery-title" className="flex flex-col gap-4">
       <div>
@@ -848,13 +1397,15 @@ function DeliverySection({
               </span>
             </label>
           ) : (
-            (Object.keys(SHIPPING) as ShippingOption[]).map((key) => {
+            shippingOptions.map((key) => {
               const option = SHIPPING[key]
               const active = shipping === key
+              const isPickup = key === 'pickup'
+              const Icon = isPickup ? Store : Truck
               return (
                 <label
                   key={key}
-                  className={`flex cursor-pointer items-center gap-4 rounded-lg border p-4 transition-colors ${
+                  className={`flex cursor-pointer items-center gap-4 rounded-lg border p-4 transition-colors animate-in fade-in duration-300 ${
                     active ? 'border-primary bg-primary/[0.03]' : 'hover:bg-muted/50'
                   }`}
                 >
@@ -866,12 +1417,22 @@ function DeliverySection({
                     onChange={() => onShippingChange(key)}
                     className="size-4 accent-[var(--primary)]"
                   />
-                  <Truck className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
                   <span className="flex-1">
-                    <span className="block text-sm font-medium">{option.label}</span>
+                    <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      {option.label}
+                      {isPickup && <ExtensionBadge label="pickup" />}
+                      {isPickup && pickupRecommended && (
+                        <span className="rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-success">
+                          Recomendado · economize {brl(SHIPPING.standard.price)}
+                        </span>
+                      )}
+                    </span>
                     <span className="block text-xs text-muted-foreground">{option.eta}</span>
                   </span>
-                  <span className="text-sm font-medium tabular-nums">{brl(option.price)}</span>
+                  <span className={`text-sm font-medium tabular-nums ${isPickup ? 'text-success' : ''}`}>
+                    {option.price === 0 ? 'Grátis' : brl(option.price)}
+                  </span>
                 </label>
               )
             })
@@ -961,12 +1522,16 @@ function PaymentOption({
 
 function CardForm({
   amount,
+  maxInstallments,
+  limitedByMin,
   installments,
   onInstallmentsChange,
 }: {
   amount: number
-  installments: string
-  onInstallmentsChange: (v: string) => void
+  maxInstallments: number
+  limitedByMin: boolean
+  installments: number
+  onInstallmentsChange: (v: number) => void
 }) {
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -988,13 +1553,22 @@ function CardForm({
       </label>
       <label className="col-span-2 flex flex-col gap-1.5 text-xs font-medium">
         Parcelas
-        <select className={inputClass} value={installments} onChange={(e) => onInstallmentsChange(e.target.value)}>
-          {[1, 2, 3, 5, 10].map((n) => (
+        <select
+          className={inputClass}
+          value={installments}
+          onChange={(e) => onInstallmentsChange(Number(e.target.value))}
+        >
+          {Array.from({ length: maxInstallments }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>
-              {n}x de {brl(amount / n)} sem juros
+              {n === 1 ? `À vista · ${brl(amount)}` : `${n}x de ${brl(amount / n)} sem juros`}
             </option>
           ))}
         </select>
+        {limitedByMin && (
+          <span className="font-normal text-muted-foreground">
+            Parcela mínima de {brl(MIN_INSTALLMENT_VALUE)}.
+          </span>
+        )}
       </label>
     </div>
   )
@@ -1076,10 +1650,11 @@ function SplitSlider({
 
 function OrderSummary({
   totals,
-  isNewUser,
   warranty,
   isSplit,
   installments,
+  thresholdNudge,
+  isPickup,
   canConfirm,
   onConfirm,
   cartItems,
@@ -1108,10 +1683,11 @@ function OrderSummary({
     total: number
     amounts: { method: PaymentMethod; percent: number; amount: number }[]
   }
-  isNewUser: boolean
   warranty: boolean
   isSplit: boolean
   installments: number
+  thresholdNudge: { missing: number; max: number } | null
+  isPickup: boolean
   canConfirm: boolean
   onConfirm: () => void
   cartItems: CartItem[]
@@ -1169,41 +1745,47 @@ function OrderSummary({
           ))}
         </ul>
 
-        {vtexAdsEnabled && (
-          <div className="border-t bg-primary/5 px-5 py-4">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
+        {vtexAdsEnabled && (() => {
+          const remaining = UPSELL_PRODUCTS.filter((p) => !cartItems.some((i) => i.id === p.id))
+          const unlocked = !isPickup && totals.shippingValue === 0 && cartItems.some((i) => i.upsell)
+          const headline = isPickup
+            ? 'Leve junto na retirada'
+            : unlocked
+              ? 'Frete grátis liberado com o item adicionado 🎉'
+              : 'Complete o pedido e ganhe frete grátis'
+          if (!remaining.length && !unlocked) return null
+          return (
+            <div className="border-t bg-primary/5 px-5 py-4">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
                 <ExtensionBadge label="vtex-ads" />
-                <span className="text-xs font-medium text-muted-foreground">Complete o pedido e ganhe frete grátis</span>
+                <span className={`text-xs font-medium ${unlocked ? 'text-success' : 'text-muted-foreground'}`}>{headline}</span>
               </div>
+              {remaining.length > 0 && (
+                <ul className="flex flex-col gap-3">
+                  {remaining.map((product) => (
+                    <li key={product.id} className="flex items-center gap-3">
+                      <div className="relative size-12 shrink-0 overflow-hidden rounded-md border bg-muted">
+                        <Image src={product.image || '/placeholder.svg'} alt={product.name} fill sizes="48px" className="object-cover" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium">{product.name}</p>
+                        <p className="text-xs text-muted-foreground">{brl(product.price)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onAddUpsell(product)}
+                        className="flex shrink-0 items-center gap-1 rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
+                      >
+                        <Plus className="size-3" aria-hidden="true" />
+                        Adicionar
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
-            {totals.shippingValue === 0 && cartItems.some((i) => i.upsell) ? (
-              <p className="text-xs font-medium text-success">Frete grátis liberado com o item adicionado 🎉</p>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {UPSELL_PRODUCTS.filter((p) => !cartItems.some((i) => i.id === p.id)).map((product) => (
-                  <li key={product.id} className="flex items-center gap-3">
-                    <div className="relative size-12 shrink-0 overflow-hidden rounded-md border bg-muted">
-                      <Image src={product.image || '/placeholder.svg'} alt={product.name} fill sizes="48px" className="object-cover" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-medium">{product.name}</p>
-                      <p className="text-xs text-muted-foreground">{brl(product.price)}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onAddUpsell(product)}
-                      className="flex shrink-0 items-center gap-1 rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
-                    >
-                      <Plus className="size-3" aria-hidden="true" />
-                      Adicionar
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
+          )
+        })()}
 
         {saveForLaterEnabled && savedItems.length > 0 && (
           <div className="border-t bg-muted/40 px-5 py-4">
@@ -1289,18 +1871,18 @@ function OrderSummary({
           </div>
         )}
 
-        <dl className="flex flex-col gap-2 border-t px-5 py-4 text-sm">
+        <dl className="flex flex-col border-t px-5 py-4 text-sm">
           <div className="flex justify-between">
             <dt className="text-muted-foreground">Subtotal</dt>
             <dd className="tabular-nums">{brl(totals.subtotal)}</dd>
           </div>
-          <Collapse open={warranty}>
+          <Collapse innerClassName="pt-2" open={warranty}>
             <div className="flex justify-between">
               <dt className="text-muted-foreground">Garantia Estendida</dt>
               <dd className="tabular-nums">{brl(WARRANTY_PRICE)}</dd>
             </div>
           </Collapse>
-          <div className="flex justify-between">
+          <div className="flex justify-between pt-2">
             <dt className="flex items-center gap-1.5 text-muted-foreground">
               <Truck className="size-4" aria-hidden="true" /> Frete
             </dt>
@@ -1308,13 +1890,13 @@ function OrderSummary({
               {totals.shippingValue === 0 ? 'Grátis' : brl(totals.shippingValue)}
             </dd>
           </div>
-          <Collapse open={totals.discount - totals.couponDiscount > 0}>
+          <Collapse innerClassName="pt-2" open={totals.discount - totals.couponDiscount > 0}>
             <div className="flex justify-between text-success">
               <dt>Desconto Pix (5%)</dt>
               <dd className="tabular-nums">- {brl(totals.discount - totals.couponDiscount)}</dd>
             </div>
           </Collapse>
-          <Collapse open={totals.couponDiscount > 0}>
+          <Collapse innerClassName="pt-2" open={totals.couponDiscount > 0}>
             <div className="flex justify-between text-success">
               <dt className="flex items-center gap-1.5">
                 <Tag className="size-3.5" aria-hidden="true" />
@@ -1323,7 +1905,7 @@ function OrderSummary({
               <dd className="tabular-nums">- {brl(totals.couponDiscount)}</dd>
             </div>
           </Collapse>
-          <Collapse open={totals.customerShare < 1}>
+          <Collapse innerClassName="pt-2" open={totals.customerShare < 1}>
             <div className="flex items-center justify-between gap-2 rounded-lg bg-success/5 px-3 py-2 text-success">
               <dt className="flex items-center gap-1.5 font-medium">
                 <Users className="size-3.5" aria-hidden="true" />
@@ -1338,18 +1920,27 @@ function OrderSummary({
               {brl(totals.total)}
             </dd>
           </div>
-          <Collapse open={totals.customerShare < 1}>
+          <Collapse innerClassName="pt-2" open={totals.customerShare < 1}>
             <p className="text-right text-xs text-muted-foreground">
               Seu amigo paga {brl(totals.friendAmount)} depois, pelo link
             </p>
           </Collapse>
           {installments > 1 && (
-            <p className="text-right text-xs text-muted-foreground">
+            <p className="pt-2 text-right text-xs text-muted-foreground">
               {installments}x de {brl(totals.total / installments)} sem juros
             </p>
           )}
-          <Collapse open={isSplit}>
-            <ul className="mt-1 flex flex-col gap-1 rounded-lg bg-muted/60 p-3 text-xs">
+          <Collapse innerClassName="pt-2" open={!!thresholdNudge}>
+            <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+              <CreditCard className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+              <span>
+                Faltam <strong className="tabular-nums">{brl(thresholdNudge?.missing ?? 0)}</strong> para parcelar em até{' '}
+                <strong>{thresholdNudge?.max}x sem juros</strong>
+              </span>
+            </div>
+          </Collapse>
+          <Collapse innerClassName="pt-2" open={isSplit}>
+            <ul className="flex flex-col gap-1 rounded-lg bg-muted/60 p-3 text-xs">
               {totals.amounts.map((a) => (
                 <li key={a.method} className="flex justify-between">
                   <span className="text-muted-foreground">
@@ -1385,6 +1976,7 @@ function SuccessPage({
   installments,
   socialShare,
   shippingLabel,
+  pixMode,
   onBack,
 }: {
   amounts: { method: PaymentMethod; percent: number; amount: number }[]
@@ -1393,6 +1985,7 @@ function SuccessPage({
   installments: number
   socialShare: boolean
   shippingLabel: string
+  pixMode: 'qr' | 'copy'
   onBack: () => void
 }) {
   const pix = amounts.find((a) => a.method === 'pix')
@@ -1428,13 +2021,19 @@ function SuccessPage({
             <h2 id="pix-title" className="font-semibold">
               Pague {brl(pix.amount)} com Pix
             </h2>
-            <p className="text-sm text-muted-foreground">Escaneie o QR Code no app do seu banco.</p>
+            <p className="text-sm text-muted-foreground">
+              {pixMode === 'copy'
+                ? 'Copie o código e cole na área Pix do app do seu banco.'
+                : 'Escaneie o QR Code no app do seu banco.'}
+            </p>
           </div>
-          <div className="rounded-xl border bg-white p-3">
-            <QrMock />
-          </div>
+          {pixMode === 'qr' && (
+            <div className="rounded-xl border bg-white p-3">
+              <QrMock />
+            </div>
+          )}
           <PixCountdown />
-          <CopyPixButton />
+          <CopyPixButton primary={pixMode === 'copy'} />
         </section>
       )}
 
@@ -1533,7 +2132,7 @@ function PixCountdown() {
   )
 }
 
-function CopyPixButton() {
+function CopyPixButton({ primary = false }: { primary?: boolean }) {
   const [copied, setCopied] = useState(false)
   const code = `00020126580014BR.GOV.BCB.PIX0136allmart-${ORDER_ID}5204000053039865802BR6009SAO PAULO`
 
@@ -1550,7 +2149,11 @@ function CopyPixButton() {
     <button
       type="button"
       onClick={copy}
-      className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+      className={
+        primary
+          ? 'flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90'
+          : 'flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted'
+      }
     >
       {copied ? <Check className="size-4 text-success" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}
       {copied ? 'Código copiado' : 'Copiar Pix Copia e Cola'}
