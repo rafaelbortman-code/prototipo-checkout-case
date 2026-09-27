@@ -12,7 +12,7 @@ O painel escuro no topo simula as três camadas:
 
 | Camada | O que representa | Exemplos |
 |---|---|---|
-| **1 · Sinais do comprador** | Quem está comprando e em que contexto | Segmento (`clientProfileData`), dispositivo, valor do carrinho |
+| **1 · Sinais do comprador** | Quem está comprando e em que contexto | Histórico de pedidos → segmento (`clientProfileData`), dispositivo, valor do carrinho |
 | **2 · Regras do lojista** | O que a loja aceita e quais apps estão instalados | Métodos aceitos (Pix, Cartão, Koin), módulos de pagamento, apps extras |
 | **3 · Decisões do motor** | O que o checkout fez, por quê e como medimos | `segment = card_affinity → inject(pix_nudge)` · hipótese · KPI · guardrail |
 
@@ -20,12 +20,20 @@ O motor (`runEngine`) é uma função pura: recebe sinais + regras e devolve o q
 
 ## Decisões de personalização
 
+O segmento não é um rótulo manual: é inferido do histórico de pedidos.
+
+| Histórico | Segmento |
+|---|---|
+| Nenhum pedido anterior | `new_user` |
+| 4 pedidos · 3 no Pix · último há 12 dias | `pix_affinity` |
+| 6 pedidos · 5 no cartão · média de 6x | `card_affinity` |
+
 | Sinal | Decisão | Hipótese | KPI | Guardrail |
 |---|---|---|---|---|
-| Comprador com afinidade por cartão | Cartão expandido, parcela máxima sem juros pré-selecionada | Comprador de cartão decide pelo valor da parcela | Conversão em cartão | Custo de parcelamento (MDR) |
+| Histórico: maioria dos pedidos no cartão, média de 6x | Cartão expandido, parcela máxima sem juros pré-selecionada | Quem já parcela decide pelo valor da parcela | Conversão em cartão | Custo de parcelamento (MDR) |
 | Afinidade por cartão + loja aceita Pix | Nudge "economize R$ X fechando no Pix" | Migrar volume para Pix reduz MDR | Share de Pix | Conversão total |
-| Afinidade por Pix | Pix expandido + garantia estendida em 1 clique | Pix custa menos ao lojista, então sobra margem para um attach | Attach rate · AOV | Conversão |
-| Novo usuário | Cadastro enxuto + frete expresso grátis travado | Tirar fricção e risco percebido da 1ª compra | Conversão de 1ª compra | Custo de frete por pedido |
+| Histórico: maioria dos pedidos no Pix | Pix expandido + garantia estendida em 1 clique | Pix custa menos ao lojista, então sobra margem para um attach | Attach rate · AOV | Conversão |
+| Histórico: nenhum pedido | Cadastro enxuto + frete expresso grátis travado | Tirar fricção e risco percebido da 1ª compra | Conversão de 1ª compra | Custo de frete por pedido |
 | Dispositivo mobile | Pix via copia e cola (sem QR) e Pix primeiro para quem não tem preferência | QR Code não é escaneável na mesma tela | Pix gerado → Pix pago | — |
 | Valor do carrinho | Parcelas sem juros por faixa (até 3x / 6x / 10x), com parcela mínima de R$ 50 | Não subsidiar juros em pedido pequeno | Conversão em cartão | Custo de parcelamento / GMV |
 | Carrinho perto da próxima faixa | "Faltam R$ X para parcelar em 10x" | Uma meta próxima estimula adicionar item | AOV | Abandono |
@@ -67,7 +75,7 @@ O motor (`runEngine`) é uma função pura: recebe sinais + regras e devolve o q
 
 ## O que mudaria em produção
 
-- **Sinais reais**: `orderForm.clientProfileData`, histórico de pedidos e segmentação (VTEX Master Data / CDP), em vez do seletor manual.
+- **Sinais reais**: `orderForm.clientProfileData` e o histórico de pedidos vindo de OMS / Master Data / CDP, em vez de históricos simulados por persona.
 - **Motor como serviço**: regras versionadas por lojista, com evolução para modelo (propensão por método de pagamento, elasticidade de parcela).
 - **Experimentação**: cada decisão do log vira um experimento com holdout, medindo o KPI e respeitando o guardrail.
 - **Custo real de parcelamento**: faixas de parcelas derivadas do MDR e da margem de cada lojista, não fixas.

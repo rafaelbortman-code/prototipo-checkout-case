@@ -74,6 +74,13 @@ const PROFILE_OPTIONS: { value: BuyerProfile; label: string }[] = [
   { value: 'card', label: 'Cliente (Foco em Cartão)' },
 ]
 
+// Histórico de pedidos que o motor lê para inferir o segmento.
+const BUYER_HISTORY: Record<BuyerProfile, { summary: string; signal: string }> = {
+  new: { summary: 'Nenhum pedido anterior', signal: 'orders = 0' },
+  pix: { summary: '4 pedidos · 3 no Pix · último há 12 dias', signal: 'orders = 4 · pix_share = 75%' },
+  card: { summary: '6 pedidos · 5 no cartão · média de 6x', signal: 'orders = 6 · card_share = 83% · avg = 6x' },
+}
+
 const PREFERRED_METHOD: Record<BuyerProfile, PaymentMethod | null> = {
   new: null,
   pix: 'pix',
@@ -187,7 +194,7 @@ function runEngine(i: EngineInput): EngineOutput {
   if (i.profile === 'new') {
     decisions.push({
       source: 'motor',
-      signal: 'segment = new_user',
+      signal: `${BUYER_HISTORY.new.signal} → segment = new_user`,
       action: 'mount(signup_lite) + lock(shipping.express = free)',
       hypothesis: 'Tirar fricção e risco percebido da primeira compra',
       kpi: 'conversão de 1ª compra',
@@ -204,16 +211,16 @@ function runEngine(i: EngineInput): EngineOutput {
   } else if (i.profile === 'card') {
     decisions.push({
       source: 'motor',
-      signal: 'segment = card_affinity',
+      signal: `${BUYER_HISTORY.card.signal} → segment = card_affinity`,
       action: 'expand(card) + installments.default = máx. sem juros',
-      hypothesis: 'Comprador de cartão decide pelo valor da parcela',
+      hypothesis: 'Quem já parcela em média 6x decide pelo valor da parcela',
       kpi: 'conversão em cartão',
       guardrail: 'custo de parcelamento (MDR)',
     })
   } else if (i.profile === 'pix') {
     decisions.push({
       source: 'motor',
-      signal: 'segment = pix_affinity',
+      signal: `${BUYER_HISTORY.pix.signal} → segment = pix_affinity`,
       action: 'expand(pix) + inject(upsell_warranty, 1-click)',
       hypothesis: 'Pix custa menos ao lojista → margem para oferecer um attach',
       kpi: 'attach rate de garantia · AOV',
@@ -1094,8 +1101,11 @@ function DebugPanel({
 
         <div className="grid gap-3 lg:grid-cols-[1fr_1.35fr]">
           <PanelLayer step={1} title="Sinais do comprador" subtitle="Quem está comprando e em que contexto">
-            <PanelGroup label="clientProfileData · segmento">
+            <PanelGroup label="histórico de pedidos → segmento">
               <Segmented options={PROFILE_OPTIONS} value={profile} onChange={onProfileChange} />
+              <span className="w-full font-mono text-[11px] text-zinc-400">
+                <span className="text-zinc-600">clientProfileData ·</span> {BUYER_HISTORY[profile].summary}
+              </span>
             </PanelGroup>
             <PanelGroup label="tempo real · dispositivo">
               <Segmented
