@@ -47,14 +47,14 @@ type CartItem = {
 }
 
 const CART: CartItem[] = [
-  { id: 'fogao', name: 'Fogão 5 Bocas Inox Turbo', variant: 'Inox · Mesa de Vidro', price: 1899, image: '/placeholder.svg' },
-  { id: 'panela', name: 'Panela de Pressão Elétrica Digital', variant: '6 Litros · Preta', price: 349, image: '/placeholder.svg' },
+  { id: 'tenis', name: 'Tênis Runner Pro', variant: 'Branco · 42', price: 400, image: '/products/tenis.png' },
+  { id: 'meia', name: 'Meia Performance Cano Médio', variant: 'Branco · M', price: 50, image: '/products/meia.png' },
 ]
 
 const UPSELL_PRODUCTS: CartItem[] = [
-  { id: 'kit-limpeza', name: 'Kit Limpeza para Inox', variant: 'Kit com 3 itens', price: 39.9, image: '/placeholder.svg', upsell: true },
-  { id: 'mangueira', name: 'Mangueira de Gás Extra Flexível', variant: '1,5m · Certificada', price: 49.9, image: '/placeholder.svg', upsell: true },
-  { id: 'regulador', name: 'Regulador de Gás de Alta Precisão', variant: 'Universal', price: 34.9, image: '/placeholder.svg', upsell: true },
+  { id: 'cadarco', name: 'Cadarço Extra Resistente', variant: 'Preto · Par avulso', price: 19.9, image: '/products/cadarco.png', upsell: true },
+  { id: 'palmilha', name: 'Palmilha Conforto Gel', variant: 'Tamanho único', price: 29.9, image: '/products/palmilha.png', upsell: true },
+  { id: 'spray', name: 'Spray Impermeabilizante', variant: '200ml', price: 24.9, image: '/products/spray.png', upsell: true },
 ]
 
 const PROFILE_OPTIONS: { value: BuyerProfile; label: string }[] = [
@@ -84,7 +84,7 @@ const PIX_DISCOUNT_RATE = 0.05
 const WARRANTY_PRICE = 39.9
 const MAX_MIXED_METHODS = 2
 const PIX_TIMER_SECONDS = 10 * 60
-const ORDER_ID = 'EL-240927'
+const ORDER_ID = 'AM-240927'
 
 type Coupon = { code: string; label: string; type: 'percent' | 'shipping'; value: number }
 
@@ -323,7 +323,7 @@ export default function ModularCheckout() {
             <div className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
               <ShoppingBag className="size-4" aria-hidden="true" />
             </div>
-            <span className="font-semibold tracking-tight">ElectroLar</span>
+            <span className="font-semibold tracking-tight">Allmart</span>
           </div>
           <ol className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex" aria-label="Etapas do checkout">
             <li className="flex items-center gap-1.5">
@@ -410,7 +410,7 @@ export default function ModularCheckout() {
                         <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
                         <div>
                           <p className="text-sm font-semibold">Adicionar Garantia Estendida por + {brl(WARRANTY_PRICE)}</p>
-                          <p className="text-xs text-muted-foreground">12 meses extras de cobertura para o seu fogão.</p>
+                          <p className="text-xs text-muted-foreground">12 meses extras de cobertura para o seu pedido.</p>
                         </div>
                       </div>
                       <button
@@ -692,18 +692,27 @@ function DebugToggle({
   )
 }
 
-const AD_BY_PROFILE: Record<BuyerProfile, { title: string; description: string }> = {
+const AD_BY_PROFILE: Record<BuyerProfile, { brand: string; title: string; description: string; image: string; price: number }> = {
   new: {
-    title: 'Kit Instalação Grátis · 1ª Compra',
-    description: 'Clientes novos que levam a instalação profissional junto ganham frete grátis e suporte técnico prioritário.',
+    brand: 'StepGuard',
+    title: 'Kit Impermeabilizante para Tênis',
+    description: 'Anúncio da StepGuard para novos clientes: 20% OFF no primeiro kit, protegendo seu tênis já na estreia.',
+    image: '/products/spray.png',
+    price: 24.9 * 0.8,
   },
   pix: {
-    title: 'Garantia Estendida ElectroLar · R$ 49,90',
-    description: 'Baseado no seu histórico com Pix, garanta 12 meses extras de cobertura com desconto.',
+    brand: 'ConfortMax',
+    title: 'Palmilha Gel ConfortMax',
+    description: 'Anúncio da ConfortMax: clientes que pagam no Pix aprovam na hora e ganham frete grátis nesta palmilha.',
+    image: '/products/palmilha.png',
+    price: 29.9,
   },
   card: {
-    title: 'Assinatura ElectroLar Plus · 3x sem juros',
-    description: 'Baseado no seu perfil de compra no cartão, garanta frete grátis nas próximas 3 compras.',
+    brand: 'RunLace',
+    title: 'Cadarço Premium RunLace',
+    description: 'Anúncio da RunLace: baseado no seu perfil de cartão, parcele os acessórios em até 3x sem juros.',
+    image: '/products/cadarco.png',
+    price: 19.9,
   },
 }
 
@@ -711,17 +720,20 @@ function VtexAdsBanner({ profile }: { profile: BuyerProfile }) {
   const ad = AD_BY_PROFILE[profile]
   return (
     <div className="flex items-start gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4">
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
-        <Megaphone className="size-4 text-primary" aria-hidden="true" />
+      <div className="relative size-14 shrink-0 overflow-hidden rounded-lg border bg-background">
+        <Image src={ad.image || '/placeholder.svg'} alt={ad.title} fill sizes="56px" className="object-cover" />
       </div>
       <div className="flex-1">
         <div className="mb-1 flex flex-wrap items-center gap-2">
-          <p className="text-sm font-semibold">{ad.title}</p>
+          <span className="text-xs font-semibold uppercase tracking-wide text-primary">{ad.brand}</span>
           <ExtensionBadge label="vtex-ads" />
           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             Patrocinado
           </span>
         </div>
+        <p className="text-sm font-semibold">
+          {ad.title} <span className="font-normal text-muted-foreground">· {brl(ad.price)}</span>
+        </p>
         <p className="text-sm text-muted-foreground text-pretty">{ad.description}</p>
       </div>
     </div>
@@ -1336,7 +1348,7 @@ function SuccessPage({
   const pix = amounts.find((a) => a.method === 'pix')
   const half = total / 2
   const shareText = encodeURIComponent(
-    `Oi! Reservei um pedido na ElectroLar (#${ORDER_ID}). Falta ${brl(half)} para finalizar — o link expira em 2h: https://electrolar.example/pagar/${ORDER_ID}`,
+    `Oi! Reservei um pedido na Allmart (#${ORDER_ID}). Falta ${brl(half)} para finalizar — o link expira em 2h: https://allmart.example/pagar/${ORDER_ID}`,
   )
 
   const methodDetail = (a: (typeof amounts)[number]) => {
@@ -1474,7 +1486,7 @@ function PixCountdown() {
 
 function CopyPixButton() {
   const [copied, setCopied] = useState(false)
-  const code = `00020126580014BR.GOV.BCB.PIX0136electrolar-${ORDER_ID}5204000053039865802BR6009SAO PAULO`
+  const code = `00020126580014BR.GOV.BCB.PIX0136allmart-${ORDER_ID}5204000053039865802BR6009SAO PAULO`
 
   const copy = async () => {
     try {
