@@ -1188,6 +1188,61 @@ function OrderSummary({
           </div>
         )}
 
+        {couponsEnabled && (
+          <div className="border-t px-5 py-4">
+            <div className="mb-2 flex items-center gap-2">
+              <ExtensionBadge label="coupons" />
+              <span className="text-xs font-medium text-muted-foreground">Cupom de desconto</span>
+            </div>
+            {appliedCoupon ? (
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-success/30 bg-success/5 px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Tag className="size-4 shrink-0 text-success" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-success">{appliedCoupon.code}</p>
+                    <p className="text-xs text-muted-foreground">{appliedCoupon.label}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={onRemoveCoupon}
+                  className="shrink-0 rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  Remover
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={couponInput}
+                    onChange={(e) => onCouponInputChange(e.target.value.toUpperCase())}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        onApplyCoupon()
+                      }
+                    }}
+                    placeholder="Código do cupom"
+                    className={`${inputClass} uppercase`}
+                  />
+                  <button
+                    type="button"
+                    onClick={onApplyCoupon}
+                    disabled={!couponInput.trim()}
+                    className="shrink-0 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Aplicar
+                  </button>
+                </div>
+                {couponError && <p className="text-xs font-medium text-destructive">{couponError}</p>}
+                <p className="text-[11px] text-muted-foreground">Experimente BEMVINDO10 ou FRETEGRATIS.</p>
+              </div>
+            )}
+          </div>
+        )}
+
         <dl className="flex flex-col gap-2 border-t px-5 py-4 text-sm">
           <div className="flex justify-between">
             <dt className="text-muted-foreground">Subtotal</dt>
@@ -1207,10 +1262,19 @@ function OrderSummary({
               {totals.shippingValue === 0 ? 'Grátis' : brl(totals.shippingValue)}
             </dd>
           </div>
-          <Collapse open={totals.discount > 0}>
+          <Collapse open={totals.discount - totals.couponDiscount > 0}>
             <div className="flex justify-between text-success">
               <dt>Desconto Pix (5%)</dt>
-              <dd className="tabular-nums">- {brl(totals.discount)}</dd>
+              <dd className="tabular-nums">- {brl(totals.discount - totals.couponDiscount)}</dd>
+            </div>
+          </Collapse>
+          <Collapse open={totals.couponDiscount > 0}>
+            <div className="flex justify-between text-success">
+              <dt className="flex items-center gap-1.5">
+                <Tag className="size-3.5" aria-hidden="true" />
+                Cupom {appliedCoupon?.code}
+              </dt>
+              <dd className="tabular-nums">- {brl(totals.couponDiscount)}</dd>
             </div>
           </Collapse>
           <div className="mt-2 flex items-baseline justify-between border-t pt-3">
