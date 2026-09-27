@@ -261,12 +261,19 @@ export default function ModularCheckout() {
       shares.set(methods[1], 1 - split / 100)
     }
 
-    const pixSavings = base * PIX_DISCOUNT_RATE
     const pixDiscount = base * (shares.get('pix') ?? 0) * PIX_DISCOUNT_RATE
     const couponDiscount =
       toggles.coupons && appliedCoupon?.type === 'percent' ? (base - pixDiscount) * appliedCoupon.value : 0
     const discount = pixDiscount + couponDiscount
-    const total = base - discount
+    const orderTotal = base - discount
+
+    // Com Social Share ativo, o cliente só paga a sua metade agora — o mix de
+    // pagamentos e os descontos passam a incidir sobre essa metade, não sobre o pedido inteiro.
+    const customerShare = toggles.socialShare && wantsSocialShare ? 0.5 : 1
+    const total = orderTotal * customerShare
+    const friendAmount = orderTotal - total
+    const pixSavings = base * customerShare * PIX_DISCOUNT_RATE
+
     const amounts = methods.map((m) => {
       const share = shares.get(m) ?? 0
       const methodPixDiscount = m === 'pix' ? pixDiscount : 0
@@ -274,12 +281,35 @@ export default function ModularCheckout() {
       return {
         method: m,
         percent: Math.round(share * 100),
-        amount: base * share - methodPixDiscount - methodCouponDiscount,
+        amount: (base * share - methodPixDiscount - methodCouponDiscount) * customerShare,
       }
     })
 
-    return { subtotal, warrantyValue, shippingValue, pixSavings, discount, couponDiscount, total, amounts }
-  }, [warranty, hasFreeShippingUnlock, shipping, methods, split, cartItems, toggles.coupons, appliedCoupon])
+    return {
+      subtotal,
+      warrantyValue,
+      shippingValue,
+      pixSavings,
+      discount,
+      couponDiscount,
+      orderTotal,
+      customerShare,
+      friendAmount,
+      total,
+      amounts,
+    }
+  }, [
+    warranty,
+    hasFreeShippingUnlock,
+    shipping,
+    methods,
+    split,
+    cartItems,
+    toggles.coupons,
+    appliedCoupon,
+    toggles.socialShare,
+    wantsSocialShare,
+  ])
 
   const amountFor = (m: PaymentMethod) => totals.amounts.find((a) => a.method === m)?.amount ?? totals.total
 
@@ -348,6 +378,7 @@ export default function ModularCheckout() {
         <SuccessPage
           amounts={totals.amounts}
           total={totals.total}
+          friendAmount={totals.friendAmount}
           installments={Number(installments)}
           socialShare={toggles.socialShare && wantsSocialShare}
           shippingLabel={hasFreeShippingUnlock ? 'Frete Expresso · Grátis' : `${SHIPPING[shipping].label} · ${brl(totals.shippingValue)}`}
@@ -496,8 +527,8 @@ export default function ModularCheckout() {
                       <ExtensionBadge label="social-share" />
                     </div>
                     <p className="text-sm text-muted-foreground text-pretty">
-                      Marque para pagar só a sua metade agora. Depois de confirmar, você envia um link para um amigo
-                      pagar o restante ({brl(totals.total / 2)}).
+                      Marque para pagar só a sua metade agora ({brl(totals.orderTotal / 2)}). Depois de confirmar,
+                      você envia um link para um amigo pagar o restante.
                     </p>
                   </div>
                 </label>
@@ -1071,6 +1102,9 @@ function OrderSummary({
     shippingValue: number
     discount: number
     couponDiscount: number
+    orderTotal: number
+    customerShare: number
+    friendAmount: number
     total: number
     amounts: { method: PaymentMethod; percent: number; amount: number }[]
   }
@@ -1289,12 +1323,26 @@ function OrderSummary({
               <dd className="tabular-nums">- {brl(totals.couponDiscount)}</dd>
             </div>
           </Collapse>
+          <Collapse open={totals.customerShare < 1}>
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-success/5 px-3 py-2 text-success">
+              <dt className="flex items-center gap-1.5 font-medium">
+                <Users className="size-3.5" aria-hidden="true" />
+                Compra dividida com um amigo
+              </dt>
+              <dd className="text-xs text-muted-foreground">Pedido: {brl(totals.orderTotal)}</dd>
+            </div>
+          </Collapse>
           <div className="mt-2 flex items-baseline justify-between border-t pt-3">
-            <dt className="font-semibold">Total</dt>
+            <dt className="font-semibold">{totals.customerShare < 1 ? 'Você paga agora (50%)' : 'Total'}</dt>
             <dd className="text-xl font-semibold tabular-nums" aria-live="polite">
               {brl(totals.total)}
             </dd>
           </div>
+          <Collapse open={totals.customerShare < 1}>
+            <p className="text-right text-xs text-muted-foreground">
+              Seu amigo paga {brl(totals.friendAmount)} depois, pelo link
+            </p>
+          </Collapse>
           {installments > 1 && (
             <p className="text-right text-xs text-muted-foreground">
               {installments}x de {brl(totals.total / installments)} sem juros
@@ -1333,6 +1381,7 @@ function OrderSummary({
 function SuccessPage({
   amounts,
   total,
+  friendAmount,
   installments,
   socialShare,
   shippingLabel,
@@ -1340,15 +1389,15 @@ function SuccessPage({
 }: {
   amounts: { method: PaymentMethod; percent: number; amount: number }[]
   total: number
+  friendAmount: number
   installments: number
   socialShare: boolean
   shippingLabel: string
   onBack: () => void
 }) {
   const pix = amounts.find((a) => a.method === 'pix')
-  const half = total / 2
   const shareText = encodeURIComponent(
-    `Oi! Reservei um pedido na Allmart (#${ORDER_ID}). Falta ${brl(half)} para finalizar — o link expira em 2h: https://allmart.example/pagar/${ORDER_ID}`,
+    `Oi! Reservei um pedido na Allmart (#${ORDER_ID}). Falta ${brl(friendAmount)} para finalizar — o link expira em 2h: https://allmart.example/pagar/${ORDER_ID}`,
   )
 
   const methodDetail = (a: (typeof amounts)[number]) => {
@@ -1403,7 +1452,7 @@ function SuccessPage({
                 <ExtensionBadge label="social-share" />
               </div>
               <p className="text-sm text-muted-foreground text-pretty">
-                Você garantiu o pedido. O restante ({brl(half)}) pode ser pago por outra pessoa pelo link.
+                Você garantiu o pedido. O restante ({brl(friendAmount)}) pode ser pago por outra pessoa pelo link.
               </p>
             </div>
           </div>
