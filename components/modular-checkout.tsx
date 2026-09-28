@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Image from 'next/image'
 import {
   Bot,
@@ -10,6 +10,7 @@ import {
   Copy,
   CreditCard,
   Gift,
+  Globe,
   Heart,
   Lock,
   MapPin,
@@ -33,6 +34,7 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react'
+import { STRINGS, formatBRL, type Lang } from './i18n'
 
 type BuyerProfile = 'new' | 'pix' | 'card'
 type Device = 'mobile' | 'desktop'
@@ -48,37 +50,32 @@ type Toggles = {
 }
 type EnabledMethods = Record<PaymentMethod, boolean>
 
+// Nome e variante de cada produto vêm do dicionário de idioma (i18n.ts), pelo id.
 type CartItem = {
   id: string
-  name: string
-  variant: string
   price: number
   image: string
   upsell?: boolean
 }
 
 const CART: CartItem[] = [
-  { id: 'tenis', name: 'Tênis Runner Pro', variant: 'Branco · 42', price: 400, image: '/products/tenis.png' },
-  { id: 'meia', name: 'Meia Performance Cano Médio', variant: 'Branco · M', price: 50, image: '/products/meia.png' },
+  { id: 'tenis', price: 400, image: '/products/tenis.png' },
+  { id: 'meia', price: 50, image: '/products/meia.png' },
 ]
 
 const UPSELL_PRODUCTS: CartItem[] = [
-  { id: 'cadarco', name: 'Cadarço Extra Resistente', variant: 'Preto · Par avulso', price: 29.9, image: '/products/cadarco.png', upsell: true },
-  { id: 'palmilha', name: 'Palmilha Conforto Gel', variant: 'Tamanho único', price: 29.9, image: '/products/palmilha.png', upsell: true },
-  { id: 'spray', name: 'Spray Impermeabilizante', variant: '200ml', price: 24.9, image: '/products/spray.png', upsell: true },
+  { id: 'cadarco', price: 29.9, image: '/products/cadarco.png', upsell: true },
+  { id: 'palmilha', price: 29.9, image: '/products/palmilha.png', upsell: true },
+  { id: 'spray', price: 24.9, image: '/products/spray.png', upsell: true },
 ]
 
-const PROFILE_OPTIONS: { value: BuyerProfile; label: string }[] = [
-  { value: 'new', label: 'Novo Usuário' },
-  { value: 'pix', label: 'Cliente (Foco em Pix)' },
-  { value: 'card', label: 'Cliente (Foco em Cartão)' },
-]
+const PROFILES: BuyerProfile[] = ['new', 'pix', 'card']
 
-// Histórico de pedidos que o motor lê para inferir o segmento.
-const BUYER_HISTORY: Record<BuyerProfile, { summary: string; signal: string }> = {
-  new: { summary: 'Nenhum pedido anterior', signal: 'orders = 0' },
-  pix: { summary: '4 pedidos · 3 no Pix · último há 12 dias', signal: 'orders = 4 · pix_share = 75%' },
-  card: { summary: '6 pedidos · 5 no cartão · média de 6x', signal: 'orders = 6 · card_share = 83% · avg = 6x' },
+// Histórico de pedidos que o motor lê para inferir o segmento (o resumo legível fica no i18n).
+const BUYER_HISTORY_SIGNAL: Record<BuyerProfile, string> = {
+  new: 'orders = 0',
+  pix: 'orders = 4 · pix_share = 75%',
+  card: 'orders = 6 · card_share = 83% · avg = 6x',
 }
 
 const PREFERRED_METHOD: Record<BuyerProfile, PaymentMethod | null> = {
@@ -87,16 +84,10 @@ const PREFERRED_METHOD: Record<BuyerProfile, PaymentMethod | null> = {
   card: 'card',
 }
 
-const METHOD_LABEL: Record<PaymentMethod, string> = {
-  pix: 'Pix',
-  card: 'Cartão',
-  koin: 'Koin',
-}
-
-const SHIPPING: Record<ShippingOption, { label: string; eta: string; price: number }> = {
-  standard: { label: 'Frete Padrão', eta: '5 a 7 dias úteis', price: 14.9 },
-  express: { label: 'Frete Expresso', eta: '1 a 2 dias úteis', price: 24.9 },
-  pickup: { label: 'Retirar na loja', eta: 'Allmart Paulista · 1,2 km · pronto em 2h', price: 0 },
+const SHIPPING_PRICE: Record<ShippingOption, number> = {
+  standard: 14.9,
+  express: 24.9,
+  pickup: 0,
 }
 
 const PIX_DISCOUNT_RATE = 0.05
@@ -105,14 +96,20 @@ const MAX_MIXED_METHODS = 2
 const PIX_TIMER_SECONDS = 10 * 60
 const ORDER_ID = 'AM-240927'
 
-type Coupon = { code: string; label: string; type: 'percent' | 'shipping'; value: number }
+type Coupon = { code: string; type: 'percent' | 'shipping'; value: number }
 
 const COUPONS: Record<string, Coupon> = {
-  BEMVINDO10: { code: 'BEMVINDO10', label: '10% OFF no pedido', type: 'percent', value: 0.1 },
-  FRETEGRATIS: { code: 'FRETEGRATIS', label: 'Frete grátis', type: 'shipping', value: 0 },
+  BEMVINDO10: { code: 'BEMVINDO10', type: 'percent', value: 0.1 },
+  FRETEGRATIS: { code: 'FRETEGRATIS', type: 'shipping', value: 0 },
 }
 
-const brl = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+/* Idioma: o componente raiz guarda o idioma e o repassa por contexto. */
+const LangContext = createContext<Lang>('pt')
+
+function useI18n() {
+  const lang = useContext(LangContext)
+  return { lang, s: STRINGS[lang], brl: (value: number) => formatBRL(value, lang) }
+}
 
 /* ------------------------------------------------------------------ */
 /* Motor de personalização                                             */
@@ -121,7 +118,7 @@ const brl = (value: number) => value.toLocaleString('pt-BR', { style: 'currency'
 /* Em produção isso seria um serviço (regras → modelo), aqui é local.   */
 /* ------------------------------------------------------------------ */
 
-type DecisionSource = 'motor' | 'lojista' | 'comprador'
+type DecisionSource = 'engine' | 'merchant' | 'buyer'
 type Decision = {
   source: DecisionSource
   signal: string
@@ -160,6 +157,7 @@ function defaultMethodsFor(profile: BuyerProfile, device: Device, enabled: Enabl
 }
 
 type EngineInput = {
+  lang: Lang
   profile: BuyerProfile
   device: Device
   enabled: EnabledMethods
@@ -186,6 +184,9 @@ type EngineOutput = {
 }
 
 function runEngine(i: EngineInput): EngineOutput {
+  const t = STRINGS[i.lang].engine
+  const methodName = STRINGS[i.lang].method
+  const brl = (value: number) => formatBRL(value, i.lang)
   const decisions: Decision[] = []
   const methodOrder = methodOrderFor(i.profile, i.device, i.enabled)
   const preferred = PREFERRED_METHOD[i.profile]
@@ -193,38 +194,38 @@ function runEngine(i: EngineInput): EngineOutput {
   // 1. Segmento do comprador
   if (i.profile === 'new') {
     decisions.push({
-      source: 'motor',
-      signal: `${BUYER_HISTORY.new.signal} → segment = new_user`,
+      source: 'engine',
+      signal: `${BUYER_HISTORY_SIGNAL.new} → segment = new_user`,
       action: 'mount(signup_lite) + lock(shipping.express = free)',
-      hypothesis: 'Tirar fricção e risco percebido da primeira compra',
-      kpi: 'conversão de 1ª compra',
-      guardrail: 'custo de frete por pedido',
+      hypothesis: t.newHyp,
+      kpi: t.newKpi,
+      guardrail: t.newGuard,
     })
   }
   if (preferred && !i.enabled[preferred]) {
     decisions.push({
-      source: 'motor',
+      source: 'engine',
       signal: `segment = ${preferred}_affinity · merchant.${preferred} = off`,
-      action: methodOrder[0] ? `fallback → expand(${methodOrder[0]})` : 'fallback → nenhum método disponível',
-      hypothesis: 'A preferência do comprador nunca sobrepõe o que a loja aceita',
+      action: methodOrder[0] ? `fallback → expand(${methodOrder[0]})` : t.fallbackNone,
+      hypothesis: t.fallbackHyp,
     })
   } else if (i.profile === 'card') {
     decisions.push({
-      source: 'motor',
-      signal: `${BUYER_HISTORY.card.signal} → segment = card_affinity`,
-      action: 'expand(card) + installments.default = máx. sem juros',
-      hypothesis: 'Quem já parcela em média 6x decide pelo valor da parcela',
-      kpi: 'conversão em cartão',
-      guardrail: 'custo de parcelamento (MDR)',
+      source: 'engine',
+      signal: `${BUYER_HISTORY_SIGNAL.card} → segment = card_affinity`,
+      action: t.cardAction,
+      hypothesis: t.cardHyp,
+      kpi: t.cardKpi,
+      guardrail: t.cardGuard,
     })
   } else if (i.profile === 'pix') {
     decisions.push({
-      source: 'motor',
-      signal: `${BUYER_HISTORY.pix.signal} → segment = pix_affinity`,
+      source: 'engine',
+      signal: `${BUYER_HISTORY_SIGNAL.pix} → segment = pix_affinity`,
       action: 'expand(pix) + inject(upsell_warranty, 1-click)',
-      hypothesis: 'Pix custa menos ao lojista → margem para oferecer um attach',
-      kpi: 'attach rate de garantia · AOV',
-      guardrail: 'conversão',
+      hypothesis: t.pixHyp,
+      kpi: t.pixKpi,
+      guardrail: t.conversion,
     })
   }
 
@@ -233,18 +234,18 @@ function runEngine(i: EngineInput): EngineOutput {
     decisions.push(
       i.enabled.pix
         ? {
-            source: 'motor',
+            source: 'engine',
             signal: 'segment = card_affinity · merchant.pix = on',
-            action: 'inject(pix_nudge: "economize fechando no Pix")',
-            hypothesis: 'Migrar parte do volume de cartão para Pix reduz MDR',
-            kpi: 'share de Pix',
-            guardrail: 'conversão total',
+            action: t.nudgeAction,
+            hypothesis: t.nudgeHyp,
+            kpi: t.nudgeKpi,
+            guardrail: t.totalConversion,
           }
         : {
-            source: 'motor',
+            source: 'engine',
             signal: 'merchant.pix = off',
-            action: 'suppress(pix_nudge) → reforçar parcelamento sem juros',
-            hypothesis: 'Sem Pix, a alavanca de conversão passa a ser a parcela',
+            action: t.nudgeOffAction,
+            hypothesis: t.nudgeOffHyp,
           },
     )
   }
@@ -253,17 +254,11 @@ function runEngine(i: EngineInput): EngineOutput {
   const pixMode = i.device === 'mobile' ? 'copy' : 'qr'
   if (i.enabled.pix) {
     decisions.push({
-      source: 'motor',
+      source: 'engine',
       signal: `device = ${i.device}`,
-      action:
-        i.device === 'mobile'
-          ? `pix.mode = copia_e_cola${!preferred ? ' + order(pix primeiro)' : ''}`
-          : 'pix.mode = qr_code',
-      hypothesis:
-        i.device === 'mobile'
-          ? 'QR Code não é escaneável na mesma tela do celular'
-          : 'No desktop, o QR é o caminho mais rápido até o app do banco',
-      kpi: 'Pix gerado → Pix pago',
+      action: i.device === 'mobile' ? t.mobileAction(!preferred) : 'pix.mode = qr_code',
+      hypothesis: i.device === 'mobile' ? t.mobileHyp : t.desktopHyp,
+      kpi: t.pixPaidKpi,
     })
   }
 
@@ -277,25 +272,24 @@ function runEngine(i: EngineInput): EngineOutput {
 
   if (i.enabled.card) {
     decisions.push({
-      source: 'motor',
+      source: 'engine',
       signal: `cart.value = ${brl(i.cartValue)}`,
-      action: `card.installments ≤ ${maxInstallments}x sem juros${
-        installmentsLimitedByMin ? ` (parcela mín. ${brl(MIN_INSTALLMENT_VALUE)})` : ''
-      }`,
-      hypothesis: 'Parcelas proporcionais ao ticket: não subsidiar juros em pedido pequeno',
-      kpi: 'conversão em cartão',
-      guardrail: 'custo de parcelamento / GMV',
+      action: t.installmentsAction(maxInstallments, installmentsLimitedByMin ? brl(MIN_INSTALLMENT_VALUE) : null),
+      hypothesis: t.installmentsHyp,
+      kpi: t.cardKpi,
+      guardrail: t.installmentsGuard,
     })
     const next = nextTierFor(i.cartValue)
     if (cardRelevant && next && next.from - i.cartValue <= THRESHOLD_NUDGE_WINDOW) {
-      thresholdNudge = { missing: next.from - i.cartValue, max: next.max }
+      const missing = next.from - i.cartValue
+      thresholdNudge = { missing, max: next.max }
       decisions.push({
-        source: 'motor',
-        signal: `cart.value a ${brl(next.from - i.cartValue)} da próxima faixa`,
-        action: `inject(threshold_nudge: "faltam ${brl(next.from - i.cartValue)} para ${next.max}x")`,
-        hypothesis: 'Uma meta de parcelamento próxima estimula adicionar um item',
+        source: 'engine',
+        signal: t.thresholdSignal(brl(missing)),
+        action: t.thresholdAction(brl(missing), next.max),
+        hypothesis: t.thresholdHyp,
         kpi: 'AOV',
-        guardrail: 'abandono de checkout',
+        guardrail: t.abandonment,
       })
     }
   }
@@ -304,18 +298,18 @@ function runEngine(i: EngineInput): EngineOutput {
   const mixAvailable = i.paymentMix && methodOrder.length >= 2
   if (i.paymentMix && !mixAvailable) {
     decisions.push({
-      source: 'motor',
-      signal: 'merchant.payment_mix = on · < 2 métodos aceitos',
+      source: 'engine',
+      signal: t.mixOffSignal,
       action: 'suppress(payment_mix)',
-      hypothesis: 'Não oferecer uma combinação que o comprador não consegue fazer',
+      hypothesis: t.mixOffHyp,
     })
   }
   if (methodOrder.length === 1) {
     decisions.push({
-      source: 'motor',
-      signal: `merchant aceita só ${METHOD_LABEL[methodOrder[0]]}`,
+      source: 'engine',
+      signal: t.onlyOneSignal(methodName[methodOrder[0]]),
       action: `autoselect(${methodOrder[0]})`,
-      hypothesis: 'Menos cliques quando não existe escolha a fazer',
+      hypothesis: t.onlyOneHyp,
     })
   }
 
@@ -325,20 +319,18 @@ function runEngine(i: EngineInput): EngineOutput {
     decisions.push(
       pickupAvailable
         ? {
-            source: 'motor',
-            signal: 'address.cep = 01304-001 · loja a 1,2 km',
-            action: pickupRecommended
-              ? 'offer(pickup) + rank(1) + badge("recomendado")'
-              : 'offer(pickup) sem destaque · frete já é grátis',
-            hypothesis: 'Retirada zera o frete e entrega no mesmo dia',
-            kpi: 'share de retirada · custo logístico',
-            guardrail: 'NPS de entrega',
+            source: 'engine',
+            signal: t.pickupSignal,
+            action: pickupRecommended ? t.pickupRecommended : t.pickupNotRecommended,
+            hypothesis: t.pickupHyp,
+            kpi: t.pickupKpi,
+            guardrail: t.pickupGuard,
           }
         : {
-            source: 'motor',
-            signal: 'segment = new_user · endereço desconhecido',
-            action: 'hide(pickup) · frete expresso grátis já aplicado',
-            hypothesis: 'Sem CEP não dá para garantir uma loja próxima',
+            source: 'engine',
+            signal: t.pickupHiddenSignal,
+            action: t.pickupHiddenAction,
+            hypothesis: t.pickupHiddenHyp,
           },
     )
   }
@@ -403,6 +395,11 @@ export default function ModularCheckout() {
   const [profile, setProfile] = useState<BuyerProfile>('card')
   const [device, setDevice] = useState<Device>('desktop')
 
+  // Idioma da interface: PT ou EN, sincronizado com ?lang= na URL para compartilhar a versão certa.
+  const [lang, setLang] = useState<Lang>('pt')
+  const s = STRINGS[lang]
+  const brl = (value: number) => formatBRL(value, lang)
+
   // Camada 2 · regras do lojista
   const [enabledMethods, setEnabledMethods] = useState<EnabledMethods>({ pix: true, card: true, koin: true })
   const [toggles, setToggles] = useState<Toggles>({
@@ -426,12 +423,25 @@ export default function ModularCheckout() {
   const [savedItems, setSavedItems] = useState<CartItem[]>([])
   const [couponInput, setCouponInput] = useState('')
   const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null)
-  const [couponError, setCouponError] = useState('')
+  const [couponInvalid, setCouponInvalid] = useState(false)
 
   // O dispositivo real é o ponto de partida; o painel permite simular o outro.
   useEffect(() => {
     if (window.matchMedia('(max-width: 767px)').matches) setDevice('mobile')
+    const fromUrl = new URLSearchParams(window.location.search).get('lang')
+    if (fromUrl === 'en' || fromUrl === 'pt') setLang(fromUrl)
   }, [])
+
+  useEffect(() => {
+    document.documentElement.lang = lang === 'en' ? 'en' : 'pt-BR'
+  }, [lang])
+
+  const changeLang = (next: Lang) => {
+    setLang(next)
+    const url = new URL(window.location.href)
+    url.searchParams.set('lang', next)
+    window.history.replaceState(null, '', url)
+  }
 
   const isNewUser = profile === 'new'
   const hasFreeShippingUnlock = isNewUser || cartItems.some((i) => i.upsell)
@@ -452,7 +462,7 @@ export default function ModularCheckout() {
     setSavedItems([])
     setCouponInput('')
     setAppliedCoupon(null)
-    setCouponError('')
+    setCouponInvalid(false)
   }
 
   const changeProfile = (next: BuyerProfile) => {
@@ -485,7 +495,7 @@ export default function ModularCheckout() {
     if (key === 'coupons' && !value) {
       setAppliedCoupon(null)
       setCouponInput('')
-      setCouponError('')
+      setCouponInvalid(false)
     }
     if (key === 'saveForLater' && !value && savedItems.length > 0) {
       setCartItems((items) => [...items, ...savedItems])
@@ -522,17 +532,17 @@ export default function ModularCheckout() {
     const coupon = COUPONS[normalized]
     if (!coupon) {
       setAppliedCoupon(null)
-      setCouponError('Cupom inválido ou expirado.')
+      setCouponInvalid(true)
       return
     }
     setAppliedCoupon(coupon)
-    setCouponError('')
+    setCouponInvalid(false)
   }
 
   const removeCoupon = () => {
     setAppliedCoupon(null)
     setCouponInput('')
-    setCouponError('')
+    setCouponInvalid(false)
   }
 
   const toggleMethod = (method: PaymentMethod) => {
@@ -559,7 +569,7 @@ export default function ModularCheckout() {
   const totals = useMemo(() => {
     const subtotal = cartValue
     const warrantyValue = warranty ? WARRANTY_PRICE : 0
-    const shippingValue = hasFreeShippingUnlock || couponFreeShipping ? 0 : SHIPPING[shipping].price
+    const shippingValue = hasFreeShippingUnlock || couponFreeShipping ? 0 : SHIPPING_PRICE[shipping]
     const base = subtotal + warrantyValue + shippingValue
 
     const shares = new Map<PaymentMethod, number>()
@@ -626,6 +636,7 @@ export default function ModularCheckout() {
   const engine = useMemo(
     () =>
       runEngine({
+        lang,
         profile,
         device,
         enabled: enabledMethods,
@@ -637,7 +648,7 @@ export default function ModularCheckout() {
         shippingAlreadyFree: hasFreeShippingUnlock || !!couponFreeShipping,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [profile, device, enabledMethods, toggles.paymentMix, toggles.pickup, methods, cartValue, totals, hasFreeShippingUnlock, couponFreeShipping],
+    [lang, profile, device, enabledMethods, toggles.paymentMix, toggles.pickup, methods, cartValue, totals, hasFreeShippingUnlock, couponFreeShipping],
   )
 
   const installmentCount = Math.min(
@@ -646,60 +657,61 @@ export default function ModularCheckout() {
   )
 
   const decisions = useMemo(() => {
+    const t = STRINGS[lang].engine
     const log: Decision[] = [...engine.decisions]
     if (toggles.vtexAds)
       log.push({
-        source: 'lojista',
+        source: 'merchant',
         signal: 'app vtex_ads = on · segment',
-        action: 'mount(sponsored_ad) + mount(cross_sell → frete grátis)',
-        hypothesis: 'Receita de retail media no momento de maior intenção de compra',
-        kpi: 'receita de Ads · CTR',
-        guardrail: 'conversão do checkout',
+        action: t.adsAction,
+        hypothesis: t.adsHyp,
+        kpi: t.adsKpi,
+        guardrail: t.checkoutConversion,
       })
     if (toggles.socialShare)
       log.push({
-        source: 'lojista',
+        source: 'merchant',
         signal: 'module social_share = on',
-        action: 'mount(opt_in: dividir com um amigo)',
-        hypothesis: 'Dividir o pagamento destrava compras acima do orçamento individual',
-        kpi: 'conversão · novos compradores via link',
-        guardrail: 'pedidos não concluídos pelo amigo',
+        action: t.shareAction,
+        hypothesis: t.shareHyp,
+        kpi: t.shareKpi,
+        guardrail: t.shareGuard,
       })
     if (toggles.saveForLater)
       log.push({
-        source: 'lojista',
+        source: 'merchant',
         signal: 'app save_for_later = on',
         action: 'mount(cart.save_action)',
-        hypothesis: 'Tirar um item é melhor do que abandonar o carrinho inteiro',
-        kpi: 'recuperação de itens salvos',
+        hypothesis: t.saveForLaterHyp,
+        kpi: t.saveForLaterKpi,
       })
     if (toggles.coupons)
-      log.push({ source: 'lojista', signal: 'module coupons = on', action: 'mount(coupon_input)' })
+      log.push({ source: 'merchant', signal: 'module coupons = on', action: 'mount(coupon_input)' })
     if (toggles.socialShare && wantsSocialShare)
       log.push({
-        source: 'comprador',
+        source: 'buyer',
         signal: 'social_share.opt_in = true',
         action: 'pricing.customer_share = 50% · post_purchase.mount(share_link, ttl=2h)',
       })
     if (toggles.vtexAds && cartItems.some((i) => i.upsell))
-      log.push({ source: 'comprador', signal: 'cross_sell.added', action: 'shipping.override(free)' })
+      log.push({ source: 'buyer', signal: 'cross_sell.added', action: 'shipping.override(free)' })
     if (toggles.coupons && appliedCoupon)
       log.push({
-        source: 'comprador',
+        source: 'buyer',
         signal: `coupon = ${appliedCoupon.code}`,
-        action: `pricing.override(${appliedCoupon.type === 'percent' ? `-${appliedCoupon.value * 100}%` : 'frete grátis'})`,
+        action: `pricing.override(${appliedCoupon.type === 'percent' ? `-${appliedCoupon.value * 100}%` : t.couponFreeShipping})`,
       })
     return log
-  }, [engine, toggles, wantsSocialShare, cartItems, appliedCoupon])
+  }, [lang, engine, toggles, wantsSocialShare, cartItems, appliedCoupon])
 
   const shippingLabel =
     shipping === 'pickup'
-      ? 'Retirada na loja · Allmart Paulista'
+      ? s.shippingLabel.pickup
       : isNewUser
-        ? 'Frete Expresso · Grátis'
+        ? s.shippingLabel.newUser
         : totals.shippingValue === 0
-          ? `${SHIPPING[shipping].label} · Grátis`
-          : `${SHIPPING[shipping].label} · ${brl(totals.shippingValue)}`
+          ? s.shippingLabel.free(s.shipping[shipping].label)
+          : `${s.shipping[shipping].label} · ${brl(totals.shippingValue)}`
 
   const confirmOrder = () => {
     setPlaced(true)
@@ -707,8 +719,11 @@ export default function ModularCheckout() {
   }
 
   return (
+    <LangContext.Provider value={lang}>
     <div className="min-h-dvh bg-muted/40">
       <DebugPanel
+        lang={lang}
+        onLangChange={changeLang}
         profile={profile}
         onProfileChange={changeProfile}
         device={device}
@@ -730,21 +745,21 @@ export default function ModularCheckout() {
             </div>
             <span className="font-semibold tracking-tight">Allmart</span>
           </div>
-          <ol className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex" aria-label="Etapas do checkout">
+          <ol className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex" aria-label={s.header.steps}>
             <li className="flex items-center gap-1.5">
-              <Check className="size-4 text-success" aria-hidden="true" /> Carrinho
+              <Check className="size-4 text-success" aria-hidden="true" /> {s.header.cart}
             </li>
             <li aria-hidden="true">/</li>
             <li className={placed ? 'flex items-center gap-1.5' : 'font-medium text-foreground'} aria-current={placed ? undefined : 'step'}>
-              {placed && <Check className="size-4 text-success" aria-hidden="true" />} Entrega e Pagamento
+              {placed && <Check className="size-4 text-success" aria-hidden="true" />} {s.header.deliveryPayment}
             </li>
             <li aria-hidden="true">/</li>
             <li className={placed ? 'font-medium text-foreground' : ''} aria-current={placed ? 'step' : undefined}>
-              Confirmação
+              {s.header.confirmation}
             </li>
           </ol>
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <ShieldCheck className="size-4" aria-hidden="true" /> Ambiente seguro
+            <ShieldCheck className="size-4" aria-hidden="true" /> {s.header.secure}
           </span>
         </div>
       </header>
@@ -779,12 +794,10 @@ export default function ModularCheckout() {
               <div className="flex items-end justify-between gap-3">
                 <div>
                   <h2 id="payment-title" className="text-2xl font-semibold tracking-tight">
-                    Pagamento
+                    {s.payment.title}
                   </h2>
                   <p className="text-sm text-muted-foreground">
-                    {engine.mixAvailable
-                      ? `Combine até ${MAX_MIXED_METHODS} meios de pagamento.`
-                      : 'Escolha como deseja pagar o seu pedido.'}
+                    {engine.mixAvailable ? s.payment.subtitleMix(MAX_MIXED_METHODS) : s.payment.subtitle}
                   </p>
                 </div>
                 {engine.mixAvailable && <ExtensionBadge label="payment-mix" />}
@@ -793,7 +806,7 @@ export default function ModularCheckout() {
               <div
                 className="overflow-hidden rounded-xl border bg-background"
                 role={engine.mixAvailable ? 'group' : 'radiogroup'}
-                aria-label="Meios de pagamento"
+                aria-label={s.payment.methodsLabel}
               >
                 {engine.methodOrder.map((method, index) => {
                   const last = index === engine.methodOrder.length - 1
@@ -812,11 +825,7 @@ export default function ModularCheckout() {
                         id="pix"
                         icon={QrCode}
                         title="Pix"
-                        description={
-                          engine.pixMode === 'copy'
-                            ? '5% de desconto · copia e cola no app do banco'
-                            : '5% de desconto · aprovação imediata'
-                        }
+                        description={engine.pixMode === 'copy' ? s.payment.pixDescCopy : s.payment.pixDescQr}
                         badge="-5%"
                         {...common}
                       >
@@ -830,12 +839,10 @@ export default function ModularCheckout() {
                           </div>
                           <div className="text-sm">
                             <p className="font-medium">
-                              Valor no Pix: <span className="text-success tabular-nums">{brl(amountFor('pix'))}</span>
+                              {s.payment.pixAmount} <span className="text-success tabular-nums">{brl(amountFor('pix'))}</span>
                             </p>
                             <p className="text-muted-foreground">
-                              {engine.pixMode === 'copy'
-                                ? 'Depois de confirmar, você copia o código e cola no app do seu banco. Válido por 10 minutos.'
-                                : 'O QR Code é gerado após confirmar. Válido por 10 minutos.'}
+                              {engine.pixMode === 'copy' ? s.payment.pixHintCopy : s.payment.pixHintQr}
                             </p>
                           </div>
                         </div>
@@ -848,9 +855,9 @@ export default function ModularCheckout() {
                         key="card"
                         id="card"
                         icon={CreditCard}
-                        title="Cartão de Crédito"
+                        title={s.payment.cardTitle}
                         description={
-                          engine.maxInstallments > 1 ? `Até ${engine.maxInstallments}x sem juros` : 'À vista'
+                          engine.maxInstallments > 1 ? s.payment.cardUpTo(engine.maxInstallments) : s.payment.cardFull
                         }
                         {...common}
                       >
@@ -867,9 +874,9 @@ export default function ModularCheckout() {
                               <TrendingDown className="mt-0.5 size-5 shrink-0 text-success" aria-hidden="true" />
                               <div>
                                 <p className="text-sm font-semibold text-success">
-                                  Economize {brl(totals.pixSavings)} fechando no Pix agora
+                                  {s.payment.pixNudge(brl(totals.pixSavings))}
                                 </p>
-                                <p className="text-xs text-muted-foreground">Aprovação instantânea e 5% de desconto no total.</p>
+                                <p className="text-xs text-muted-foreground">{s.payment.pixNudgeSub}</p>
                               </div>
                             </div>
                             <button
@@ -877,7 +884,7 @@ export default function ModularCheckout() {
                               onClick={nudgeToPix}
                               className="shrink-0 rounded-md bg-success px-3 py-2 text-sm font-medium text-success-foreground transition-opacity hover:opacity-90"
                             >
-                              {engine.mixAvailable && methods.length < MAX_MIXED_METHODS ? 'Combinar com Pix' : 'Mudar para Pix'}
+                              {engine.mixAvailable && methods.length < MAX_MIXED_METHODS ? s.payment.combinePix : s.payment.switchPix}
                             </button>
                           </div>
                         </Collapse>
@@ -890,7 +897,7 @@ export default function ModularCheckout() {
                       id="koin"
                       icon={Wallet}
                       title="Koin"
-                      description="Buy Now, Pay Later · 4x sem juros"
+                      description={s.payment.koinDesc}
                       badge="BNPL"
                       {...common}
                     >
@@ -909,8 +916,8 @@ export default function ModularCheckout() {
                   <div className="flex items-start gap-3">
                     <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
                     <div>
-                      <p className="text-sm font-semibold">Adicionar Garantia Estendida por + {brl(WARRANTY_PRICE)}</p>
-                      <p className="text-xs text-muted-foreground">12 meses extras de cobertura para o seu pedido.</p>
+                      <p className="text-sm font-semibold">{s.payment.warranty(brl(WARRANTY_PRICE))}</p>
+                      <p className="text-xs text-muted-foreground">{s.payment.warrantySub}</p>
                     </div>
                   </div>
                   <button
@@ -922,7 +929,7 @@ export default function ModularCheckout() {
                     }`}
                   >
                     {warranty ? <Check className="size-4" aria-hidden="true" /> : <Plus className="size-4" aria-hidden="true" />}
-                    {warranty ? 'Adicionada' : '1-click'}
+                    {warranty ? s.payment.added : '1-click'}
                   </button>
                 </div>
               </Collapse>
@@ -940,12 +947,11 @@ export default function ModularCheckout() {
                   </div>
                   <div className="flex-1">
                     <div className="mb-1 flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-semibold">Quero dividir esta compra com um amigo</p>
+                      <p className="text-sm font-semibold">{s.payment.shareTitle}</p>
                       <ExtensionBadge label="social-share" />
                     </div>
                     <p className="text-sm text-muted-foreground text-pretty">
-                      Marque para pagar só a sua metade agora ({brl(totals.orderTotal / 2)}). Depois de confirmar,
-                      você envia um link para um amigo pagar o restante.
+                      {s.payment.shareSub(brl(totals.orderTotal / 2))}
                     </p>
                   </div>
                 </label>
@@ -975,11 +981,12 @@ export default function ModularCheckout() {
             onApplyCoupon={applyCoupon}
             onRemoveCoupon={removeCoupon}
             appliedCoupon={appliedCoupon}
-            couponError={couponError}
+            couponInvalid={couponInvalid}
           />
         </main>
       )}
     </div>
+    </LangContext.Provider>
   )
 }
 
@@ -988,9 +995,9 @@ function isMethodLocked(method: PaymentMethod, methods: PaymentMethod[], multi: 
 }
 
 const SOURCE_STYLE: Record<DecisionSource, string> = {
-  motor: 'border-emerald-400/40 text-emerald-300',
-  lojista: 'border-sky-400/40 text-sky-300',
-  comprador: 'border-amber-400/40 text-amber-300',
+  engine: 'border-emerald-400/40 text-emerald-300',
+  merchant: 'border-sky-400/40 text-sky-300',
+  buyer: 'border-amber-400/40 text-amber-300',
 }
 
 function PanelLayer({ step, title, subtitle, children }: { step: number; title: string; subtitle: string; children: ReactNode }) {
@@ -1052,6 +1059,8 @@ function Segmented<T extends string>({
 }
 
 function DebugPanel({
+  lang,
+  onLangChange,
   profile,
   onProfileChange,
   device,
@@ -1064,6 +1073,8 @@ function DebugPanel({
   onToggle,
   decisions,
 }: {
+  lang: Lang
+  onLangChange: (l: Lang) => void
   profile: BuyerProfile
   onProfileChange: (p: BuyerProfile) => void
   device: Device
@@ -1076,38 +1087,62 @@ function DebugPanel({
   onToggle: (key: keyof Toggles, value: boolean) => void
   decisions: Decision[]
 }) {
+  const { s, brl } = useI18n()
   const [showLog, setShowLog] = useState(true)
   const enabledCount = Object.values(enabledMethods).filter(Boolean).length
+  const p = s.panel
 
   return (
-    <section aria-label="Painel de simulação" className="border-b border-white/10 bg-zinc-950 text-zinc-300">
+    <section aria-label={p.ariaLabel} className="border-b border-white/10 bg-zinc-950 text-zinc-300">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-4 md:px-6">
         <div className="flex items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs">
             <Terminal className="size-4 text-emerald-400" aria-hidden="true" />
             <span className="font-semibold uppercase tracking-wider text-zinc-100">Debug Mode</span>
-            <span className="text-zinc-500">· o lojista define as regras, o motor personaliza dentro delas</span>
+            <span className="text-zinc-500">{p.tagline}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowLog((s) => !s)}
-            aria-expanded={showLog}
-            className="flex shrink-0 items-center gap-1 font-mono text-xs text-zinc-400 hover:text-zinc-100"
-          >
-            <Bot className="size-3.5" aria-hidden="true" /> decisões
-            <ChevronDown className={`size-3.5 transition-transform ${showLog ? 'rotate-180' : ''}`} aria-hidden="true" />
-          </button>
+          <div className="flex shrink-0 items-center gap-3">
+            <div role="group" aria-label={p.language} className="flex items-center gap-1 rounded-md border border-white/10 bg-white/5 p-0.5">
+              <Globe className="ml-1 size-3.5 text-zinc-500" aria-hidden="true" />
+              {(['pt', 'en'] as Lang[]).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => onLangChange(option)}
+                  aria-pressed={lang === option}
+                  className={`rounded px-2 py-0.5 font-mono text-[11px] font-semibold uppercase transition-colors ${
+                    lang === option ? 'bg-emerald-400/15 text-emerald-300' : 'text-zinc-400 hover:text-zinc-100'
+                  }`}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowLog((v) => !v)}
+              aria-expanded={showLog}
+              className="flex items-center gap-1 font-mono text-xs text-zinc-400 hover:text-zinc-100"
+            >
+              <Bot className="size-3.5" aria-hidden="true" /> {p.decisionsButton}
+              <ChevronDown className={`size-3.5 transition-transform ${showLog ? 'rotate-180' : ''}`} aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div className="grid gap-3 lg:grid-cols-[1fr_1.35fr]">
-          <PanelLayer step={1} title="Sinais do comprador" subtitle="Quem está comprando e em que contexto">
-            <PanelGroup label="histórico de pedidos → segmento">
-              <Segmented options={PROFILE_OPTIONS} value={profile} onChange={onProfileChange} />
+          <PanelLayer step={1} title={p.layer1Title} subtitle={p.layer1Subtitle}>
+            <PanelGroup label={p.historyGroup}>
+              <Segmented
+                options={PROFILES.map((value) => ({ value, label: s.profiles[value] }))}
+                value={profile}
+                onChange={onProfileChange}
+              />
               <span className="w-full font-mono text-[11px] text-zinc-400">
-                <span className="text-zinc-600">clientProfileData ·</span> {BUYER_HISTORY[profile].summary}
+                <span className="text-zinc-600">clientProfileData ·</span> {s.history[profile]}
               </span>
             </PanelGroup>
-            <PanelGroup label="tempo real · dispositivo">
+            <PanelGroup label={p.deviceGroup}>
               <Segmented
                 options={[
                   { value: 'mobile', label: 'Mobile', icon: Smartphone },
@@ -1117,31 +1152,31 @@ function DebugPanel({
                 onChange={onDeviceChange}
               />
             </PanelGroup>
-            <PanelGroup label="tempo real · valor do carrinho">
+            <PanelGroup label={p.cartGroup}>
               <span className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 font-mono text-xs text-zinc-200 tabular-nums">
-                {brl(cartValue)} → até {maxInstallments}x sem juros
+                {p.cartChip(brl(cartValue), maxInstallments)}
               </span>
             </PanelGroup>
           </PanelLayer>
 
-          <PanelLayer step={2} title="Regras do lojista" subtitle="O que a loja aceita e quais apps estão instalados">
+          <PanelLayer step={2} title={p.layer2Title} subtitle={p.layer2Subtitle}>
             <PanelGroup label="payment.methods">
               <DebugToggle
-                label="Pix"
+                label={p.toggles.pix}
                 icon={QrCode}
                 checked={enabledMethods.pix}
                 disabled={enabledMethods.pix && enabledCount === 1}
                 onChange={(v) => onMethodEnabled('pix', v)}
               />
               <DebugToggle
-                label="Cartão"
+                label={p.toggles.card}
                 icon={CreditCard}
                 checked={enabledMethods.card}
                 disabled={enabledMethods.card && enabledCount === 1}
                 onChange={(v) => onMethodEnabled('card', v)}
               />
               <DebugToggle
-                label="Koin (BNPL)"
+                label={p.toggles.koin}
                 icon={Wallet}
                 checked={enabledMethods.koin}
                 disabled={enabledMethods.koin && enabledCount === 1}
@@ -1150,29 +1185,29 @@ function DebugPanel({
             </PanelGroup>
             <PanelGroup label="payment.modules">
               <DebugToggle
-                label="Mix de Pagamentos"
+                label={p.toggles.paymentMix}
                 icon={SlidersHorizontal}
                 checked={toggles.paymentMix}
                 onChange={(v) => onToggle('paymentMix', v)}
               />
-              <DebugToggle label="Cupons" icon={Tag} checked={toggles.coupons} onChange={(v) => onToggle('coupons', v)} />
+              <DebugToggle label={p.toggles.coupons} icon={Tag} checked={toggles.coupons} onChange={(v) => onToggle('coupons', v)} />
               <DebugToggle
-                label="Social Share"
+                label={p.toggles.socialShare}
                 icon={Share2}
                 checked={toggles.socialShare}
                 onChange={(v) => onToggle('socialShare', v)}
               />
             </PanelGroup>
             <PanelGroup label="extra.apps">
-              <DebugToggle label="VTEX Ads" icon={Megaphone} checked={toggles.vtexAds} onChange={(v) => onToggle('vtexAds', v)} />
+              <DebugToggle label={p.toggles.vtexAds} icon={Megaphone} checked={toggles.vtexAds} onChange={(v) => onToggle('vtexAds', v)} />
               <DebugToggle
-                label="Save for Later"
+                label={p.toggles.saveForLater}
                 icon={Heart}
                 checked={toggles.saveForLater}
                 onChange={(v) => onToggle('saveForLater', v)}
               />
               <DebugToggle
-                label="Retirada na loja"
+                label={p.toggles.pickup}
                 icon={Store}
                 checked={toggles.pickup}
                 onChange={(v) => onToggle('pickup', v)}
@@ -1185,8 +1220,8 @@ function DebugPanel({
           <div className="rounded-lg border border-white/10 bg-black/40 p-4">
             <p className="mb-3 flex items-center gap-2 text-xs font-semibold text-zinc-100">
               <span className="flex size-5 items-center justify-center rounded-full bg-white/10 font-mono text-[10px]">3</span>
-              Decisões do motor
-              <span className="font-normal text-zinc-500">· o que o checkout fez, por quê e como medimos</span>
+              {p.layer3Title}
+              <span className="font-normal text-zinc-500">{p.layer3Subtitle}</span>
             </p>
             <ul className="flex max-h-80 flex-col gap-2.5 overflow-y-auto font-mono text-[11px]" aria-live="polite">
               {decisions.map((d) => (
@@ -1197,7 +1232,7 @@ function DebugPanel({
                   <span
                     className={`mt-px h-fit shrink-0 rounded border px-1.5 text-[9px] uppercase tracking-wider ${SOURCE_STYLE[d.source]}`}
                   >
-                    {d.source}
+                    {p.source[d.source]}
                   </span>
                   <div className="min-w-0">
                     <p className="text-zinc-300">
@@ -1244,13 +1279,14 @@ function DebugToggle({
   disabled?: boolean
   onChange: (value: boolean) => void
 }) {
+  const { s } = useI18n()
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       disabled={disabled}
-      title={disabled ? 'A loja precisa aceitar ao menos um método' : undefined}
+      title={disabled ? s.panel.lastMethod : undefined}
       onClick={() => onChange(!checked)}
       className={`flex items-center gap-2.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
         checked ? 'border-emerald-400/50 bg-emerald-400/10 text-emerald-300' : 'border-white/10 bg-white/5 text-zinc-400 hover:text-zinc-100'
@@ -1272,32 +1308,16 @@ function DebugToggle({
   )
 }
 
-const AD_BY_PROFILE: Record<BuyerProfile, { brand: string; title: string; description: string; image: string; price: number }> = {
-  new: {
-    brand: 'StepGuard',
-    title: 'Kit Impermeabilizante para Tênis',
-    description: 'Anúncio da StepGuard para novos clientes: 20% OFF no primeiro kit, protegendo seu tênis já na estreia.',
-    image: '/products/spray.png',
-    price: 24.9 * 0.8,
-  },
-  pix: {
-    brand: 'ConfortMax',
-    title: 'Palmilha Gel ConfortMax',
-    description: 'Anúncio da ConfortMax: clientes que pagam no Pix aprovam na hora e ganham frete grátis nesta palmilha.',
-    image: '/products/palmilha.png',
-    price: 29.9,
-  },
-  card: {
-    brand: 'RunLace',
-    title: 'Cadarço Premium RunLace',
-    description: 'Anúncio da RunLace: baseado no seu perfil de cartão, parcele os acessórios em até 3x sem juros.',
-    image: '/products/cadarco.png',
-    price: 19.9,
-  },
+// Marca, imagem e preço do anúncio por segmento; título e descrição vêm do i18n.
+const AD_BY_PROFILE: Record<BuyerProfile, { brand: string; image: string; price: number }> = {
+  new: { brand: 'StepGuard', image: '/products/spray.png', price: 24.9 * 0.8 },
+  pix: { brand: 'ConfortMax', image: '/products/palmilha.png', price: 29.9 },
+  card: { brand: 'RunLace', image: '/products/cadarco.png', price: 19.9 },
 }
 
 function VtexAdsBanner({ profile }: { profile: BuyerProfile }) {
-  const ad = AD_BY_PROFILE[profile]
+  const { s, brl } = useI18n()
+  const ad = { ...AD_BY_PROFILE[profile], ...s.ads[profile] }
   return (
     <div className="flex items-start gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4">
       <div className="relative size-14 shrink-0 overflow-hidden rounded-lg border bg-background">
@@ -1308,7 +1328,7 @@ function VtexAdsBanner({ profile }: { profile: BuyerProfile }) {
           <span className="text-xs font-semibold uppercase tracking-wide text-primary">{ad.brand}</span>
           <ExtensionBadge label="vtex-ads" />
           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Patrocinado
+            {s.ads.sponsored}
           </span>
         </div>
         <p className="text-sm font-semibold">
@@ -1341,15 +1361,17 @@ function DeliverySection({
       ? ['pickup', 'standard', 'express']
       : ['standard', 'express', 'pickup']
     : ['standard', 'express']
+  const { s, brl } = useI18n()
+  const d = s.delivery
 
   return (
     <section aria-labelledby="delivery-title" className="flex flex-col gap-4">
       <div>
         <h1 id="delivery-title" className="text-2xl font-semibold tracking-tight">
-          Entrega
+          {d.title}
         </h1>
         <p className="text-sm text-muted-foreground">
-          {isNewUser ? 'Primeira compra? Complete um cadastro rápido.' : 'Confirme o endereço e a modalidade de envio.'}
+          {isNewUser ? d.subtitleNew : d.subtitle}
         </p>
       </div>
 
@@ -1357,15 +1379,15 @@ function DeliverySection({
         {isNewUser ? (
           <div className="grid gap-3 animate-in fade-in slide-in-from-top-1 duration-300 sm:grid-cols-2">
             <label className="flex flex-col gap-1.5 text-xs font-medium sm:col-span-2">
-              Nome completo
-              <input className={inputClass} name="name" autoComplete="name" placeholder="Como no seu documento" />
+              {d.fullName}
+              <input className={inputClass} name="name" autoComplete="name" placeholder={d.fullNamePlaceholder} />
             </label>
             <label className="flex flex-col gap-1.5 text-xs font-medium">
-              CPF
+              {d.cpf}
               <input className={inputClass} name="cpf" inputMode="numeric" maxLength={14} placeholder="000.000.000-00" />
             </label>
             <label className="flex flex-col gap-1.5 text-xs font-medium">
-              Celular
+              {d.phone}
               <input className={inputClass} name="phone" type="tel" autoComplete="tel" placeholder="(11) 90000-0000" />
             </label>
           </div>
@@ -1374,41 +1396,41 @@ function DeliverySection({
             <div className="flex items-start gap-3">
               <MapPin className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
               <div className="text-sm">
-                <p className="font-medium">Casa</p>
-                <p className="text-muted-foreground">Rua Augusta, 1500 · Apto 42 — São Paulo/SP · 01304-001</p>
+                <p className="font-medium">{d.home}</p>
+                <p className="text-muted-foreground">{d.address}</p>
               </div>
             </div>
             <button type="button" className="shrink-0 text-xs font-medium text-primary hover:underline">
-              Alterar
+              {d.change}
             </button>
           </div>
         )}
 
         <fieldset className="flex flex-col gap-2">
-          <legend className="mb-2 text-xs font-medium">Modalidade de envio</legend>
+          <legend className="mb-2 text-xs font-medium">{d.method}</legend>
           {isNewUser ? (
             <label className="flex cursor-not-allowed items-center gap-4 rounded-lg border-2 border-success bg-success/10 p-4 animate-in fade-in zoom-in-95 duration-300">
               <input type="radio" name="shipping" checked disabled readOnly className="size-4 accent-[var(--success)]" />
               <Truck className="size-5 shrink-0 text-success" aria-hidden="true" />
               <span className="flex-1">
                 <span className="flex flex-wrap items-center gap-2 text-sm font-semibold">
-                  Frete Expresso - GRÁTIS
+                  {d.expressFree}
                   <span className="inline-flex items-center gap-1 rounded bg-success px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-success-foreground">
-                    <Gift className="size-3" aria-hidden="true" /> Benefício ganho
+                    <Gift className="size-3" aria-hidden="true" /> {d.benefit}
                   </span>
                 </span>
                 <span className="block text-xs text-muted-foreground">
-                  1 a 2 dias úteis · presente de boas-vindas para a sua primeira compra
+                  {d.welcome}
                 </span>
               </span>
               <span className="flex flex-col items-end">
-                <span className="text-xs text-muted-foreground line-through tabular-nums">{brl(SHIPPING.express.price)}</span>
-                <Lock className="size-4 text-success" aria-label="Opção travada" />
+                <span className="text-xs text-muted-foreground line-through tabular-nums">{brl(SHIPPING_PRICE.express)}</span>
+                <Lock className="size-4 text-success" aria-label={d.locked} />
               </span>
             </label>
           ) : (
             shippingOptions.map((key) => {
-              const option = SHIPPING[key]
+              const option = { ...s.shipping[key], price: SHIPPING_PRICE[key] }
               const active = shipping === key
               const isPickup = key === 'pickup'
               const Icon = isPickup ? Store : Truck
@@ -1434,14 +1456,14 @@ function DeliverySection({
                       {isPickup && <ExtensionBadge label="pickup" />}
                       {isPickup && pickupRecommended && (
                         <span className="rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-success">
-                          Recomendado · economize {brl(SHIPPING.standard.price)}
+                          {d.recommended(brl(SHIPPING_PRICE.standard))}
                         </span>
                       )}
                     </span>
                     <span className="block text-xs text-muted-foreground">{option.eta}</span>
                   </span>
                   <span className={`text-sm font-medium tabular-nums ${isPickup ? 'text-success' : ''}`}>
-                    {option.price === 0 ? 'Grátis' : brl(option.price)}
+                    {option.price === 0 ? d.free : brl(option.price)}
                   </span>
                 </label>
               )
@@ -1478,6 +1500,7 @@ function PaymentOption({
   last?: boolean
   children: ReactNode
 }) {
+  const { s } = useI18n()
   return (
     <div className={`transition-colors ${last ? '' : 'border-b'} ${selected ? 'bg-primary/[0.02]' : ''}`}>
       <button
@@ -1514,7 +1537,7 @@ function PaymentOption({
             {title}
             {badge && <span className="rounded bg-success/10 px-1.5 py-0.5 text-[11px] font-semibold text-success">{badge}</span>}
           </span>
-          <span className="block text-xs text-muted-foreground">{disabled ? `Máximo de ${MAX_MIXED_METHODS} meios atingido` : description}</span>
+          <span className="block text-xs text-muted-foreground">{disabled ? s.payment.maxReached(MAX_MIXED_METHODS) : description}</span>
         </span>
         <ChevronDown
           className={`size-4 text-muted-foreground transition-transform duration-300 ${selected ? 'rotate-180' : ''}`}
@@ -1543,26 +1566,28 @@ function CardForm({
   installments: number
   onInstallmentsChange: (v: number) => void
 }) {
+  const { s, brl } = useI18n()
+  const c = s.cardForm
   return (
     <div className="grid grid-cols-2 gap-3">
       <label className="col-span-2 flex flex-col gap-1.5 text-xs font-medium">
-        Número do cartão
+        {c.number}
         <input className={inputClass} inputMode="numeric" autoComplete="cc-number" placeholder="0000 0000 0000 0000" />
       </label>
       <label className="col-span-2 flex flex-col gap-1.5 text-xs font-medium">
-        Nome impresso no cartão
-        <input className={inputClass} autoComplete="cc-name" placeholder="Como aparece no cartão" />
+        {c.name}
+        <input className={inputClass} autoComplete="cc-name" placeholder={c.namePlaceholder} />
       </label>
       <label className="flex flex-col gap-1.5 text-xs font-medium">
-        Validade
-        <input className={inputClass} autoComplete="cc-exp" placeholder="MM/AA" />
+        {c.expiry}
+        <input className={inputClass} autoComplete="cc-exp" placeholder={c.expiryPlaceholder} />
       </label>
       <label className="flex flex-col gap-1.5 text-xs font-medium">
-        CVV
+        {c.cvv}
         <input className={inputClass} inputMode="numeric" autoComplete="cc-csc" placeholder="123" />
       </label>
       <label className="col-span-2 flex flex-col gap-1.5 text-xs font-medium">
-        Parcelas
+        {c.installments}
         <select
           className={inputClass}
           value={installments}
@@ -1570,13 +1595,13 @@ function CardForm({
         >
           {Array.from({ length: maxInstallments }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>
-              {n === 1 ? `À vista · ${brl(amount)}` : `${n}x de ${brl(amount / n)} sem juros`}
+              {n === 1 ? c.optionFull(brl(amount)) : c.option(n, brl(amount / n))}
             </option>
           ))}
         </select>
         {limitedByMin && (
           <span className="font-normal text-muted-foreground">
-            Parcela mínima de {brl(MIN_INSTALLMENT_VALUE)}.
+            {c.minNote(brl(MIN_INSTALLMENT_VALUE))}
           </span>
         )}
       </label>
@@ -1585,12 +1610,13 @@ function CardForm({
 }
 
 function KoinPlan({ amount }: { amount: number }) {
-  const labels = ['Hoje', '30 dias', '60 dias', '90 dias']
+  const { s, brl } = useI18n()
+  const labels = s.koin.labels
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm">
-        <span className="font-medium">4x de {brl(amount / 4)}</span>{' '}
-        <span className="text-muted-foreground">sem juros · aprovação em segundos só com CPF</span>
+        <span className="font-medium">{s.koin.head(brl(amount / 4))}</span>{' '}
+        <span className="text-muted-foreground">{s.koin.sub}</span>
       </p>
       <ol className="grid grid-cols-4 gap-2">
         {labels.map((label, i) => (
@@ -1614,14 +1640,16 @@ function SplitSlider({
   onSplitChange: (value: number) => void
   amounts: { method: PaymentMethod; percent: number; amount: number }[]
 }) {
+  const { s, brl } = useI18n()
   if (amounts.length < 2) return null
   const [first, second] = amounts
+  const name = s.method
   return (
     <div className="rounded-xl border bg-background p-5">
       <div className="mb-4 flex items-center justify-between gap-2">
         <p className="flex items-center gap-2 text-sm font-semibold">
           <SlidersHorizontal className="size-4 text-primary" aria-hidden="true" />
-          Divida o valor entre os meios
+          {s.split.title}
         </p>
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
           {first.percent}% / {second.percent}%
@@ -1630,14 +1658,14 @@ function SplitSlider({
       <div className="mb-3 grid grid-cols-2 gap-3">
         {[first, second].map((entry, i) => (
           <div key={entry.method} className={`rounded-lg border p-3 ${i === 1 ? 'text-right' : ''}`}>
-            <p className="text-xs text-muted-foreground">{METHOD_LABEL[entry.method]}</p>
+            <p className="text-xs text-muted-foreground">{name[entry.method]}</p>
             <p className="text-lg font-semibold tabular-nums">{brl(entry.amount)}</p>
           </div>
         ))}
       </div>
       <label className="flex flex-col gap-2">
         <span className="sr-only">
-          Porcentagem do total paga com {METHOD_LABEL[first.method]}
+          {s.split.srLabel(name[first.method])}
         </span>
         <input
           type="range"
@@ -1646,12 +1674,12 @@ function SplitSlider({
           step={5}
           value={split}
           onChange={(e) => onSplitChange(Number(e.target.value))}
-          aria-valuetext={`${first.percent}% ${METHOD_LABEL[first.method]}, ${second.percent}% ${METHOD_LABEL[second.method]}`}
+          aria-valuetext={`${first.percent}% ${name[first.method]}, ${second.percent}% ${name[second.method]}`}
           className="h-2 w-full cursor-pointer accent-[var(--primary)]"
         />
         <span className="flex justify-between text-[11px] text-muted-foreground">
-          <span>Mais em {METHOD_LABEL[second.method]}</span>
-          <span>Mais em {METHOD_LABEL[first.method]}</span>
+          <span>{s.split.more(name[second.method])}</span>
+          <span>{s.split.more(name[first.method])}</span>
         </span>
       </label>
     </div>
@@ -1680,7 +1708,7 @@ function OrderSummary({
   onApplyCoupon,
   onRemoveCoupon,
   appliedCoupon,
-  couponError,
+  couponInvalid,
 }: {
   totals: {
     subtotal: number
@@ -1713,31 +1741,34 @@ function OrderSummary({
   onApplyCoupon: () => void
   onRemoveCoupon: () => void
   appliedCoupon: Coupon | null
-  couponError: string
+  couponInvalid: boolean
 }) {
+  const { s, brl } = useI18n()
+  const m = s.summary
+  const product = (id: string) => s.products[id]
   return (
     <aside aria-labelledby="summary-title" className="flex flex-col gap-4 lg:sticky lg:top-6 lg:self-start">
       <div className="rounded-xl border bg-background">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 id="summary-title" className="font-semibold">
-            Resumo do pedido
+            {m.title}
           </h2>
-          <span className="text-sm text-muted-foreground">{cartItems.length} itens</span>
+          <span className="text-sm text-muted-foreground">{m.items(cartItems.length)}</span>
         </div>
 
         <ul className="px-5">
           {cartItems.map((item) => (
             <li key={item.id} className="flex gap-3 border-b py-4 last:border-b-0">
               <div className="relative size-16 shrink-0 overflow-hidden rounded-md border bg-muted">
-                <Image src={item.image || '/placeholder.svg'} alt={item.name} fill sizes="64px" className="object-cover" />
+                <Image src={item.image || '/placeholder.svg'} alt={product(item.id).name} fill sizes="64px" className="object-cover" />
               </div>
               <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <p className="truncate text-sm font-medium">{item.name}</p>
+                    <p className="truncate text-sm font-medium">{product(item.id).name}</p>
                     {item.upsell && <ExtensionBadge label="vtex-ads" />}
                   </div>
-                  <p className="text-xs text-muted-foreground">{item.variant}</p>
+                  <p className="text-xs text-muted-foreground">{product(item.id).variant}</p>
                   {saveForLaterEnabled && (
                     <button
                       type="button"
@@ -1745,7 +1776,7 @@ function OrderSummary({
                       className="mt-1 flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                     >
                       <Heart className="size-3" aria-hidden="true" />
-                      Salvar para depois
+                      {m.saveForLater}
                     </button>
                   )}
                 </div>
@@ -1758,11 +1789,7 @@ function OrderSummary({
         {vtexAdsEnabled && (() => {
           const remaining = UPSELL_PRODUCTS.filter((p) => !cartItems.some((i) => i.id === p.id))
           const unlocked = !isPickup && totals.shippingValue === 0 && cartItems.some((i) => i.upsell)
-          const headline = isPickup
-            ? 'Leve junto na retirada'
-            : unlocked
-              ? 'Frete grátis liberado com o item adicionado 🎉'
-              : 'Complete o pedido e ganhe frete grátis'
+          const headline = isPickup ? m.adsPickup : unlocked ? m.adsUnlocked : m.adsHeadline
           if (!remaining.length && !unlocked) return null
           return (
             <div className="border-t bg-primary/5 px-5 py-4">
@@ -1775,10 +1802,10 @@ function OrderSummary({
                   {remaining.map((product) => (
                     <li key={product.id} className="flex items-center gap-3">
                       <div className="relative size-12 shrink-0 overflow-hidden rounded-md border bg-muted">
-                        <Image src={product.image || '/placeholder.svg'} alt={product.name} fill sizes="48px" className="object-cover" />
+                        <Image src={product.image || '/placeholder.svg'} alt={s.products[product.id].name} fill sizes="48px" className="object-cover" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs font-medium">{product.name}</p>
+                        <p className="truncate text-xs font-medium">{s.products[product.id].name}</p>
                         <p className="text-xs text-muted-foreground">{brl(product.price)}</p>
                       </div>
                       <button
@@ -1787,7 +1814,7 @@ function OrderSummary({
                         className="flex shrink-0 items-center gap-1 rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
                       >
                         <Plus className="size-3" aria-hidden="true" />
-                        Adicionar
+                        {m.add}
                       </button>
                     </li>
                   ))}
@@ -1801,16 +1828,16 @@ function OrderSummary({
           <div className="border-t bg-muted/40 px-5 py-4">
             <div className="mb-2 flex items-center gap-2">
               <ExtensionBadge label="save-for-later" />
-              <span className="text-xs font-medium text-muted-foreground">Guardados para depois ({savedItems.length})</span>
+              <span className="text-xs font-medium text-muted-foreground">{m.saved(savedItems.length)}</span>
             </div>
             <ul className="flex flex-col gap-3">
               {savedItems.map((item) => (
                 <li key={item.id} className="flex items-center gap-3 opacity-80">
                   <div className="relative size-12 shrink-0 overflow-hidden rounded-md border bg-muted">
-                    <Image src={item.image || '/placeholder.svg'} alt={item.name} fill sizes="48px" className="object-cover" />
+                    <Image src={item.image || '/placeholder.svg'} alt={product(item.id).name} fill sizes="48px" className="object-cover" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium">{item.name}</p>
+                    <p className="truncate text-xs font-medium">{product(item.id).name}</p>
                     <p className="text-xs text-muted-foreground">{brl(item.price)}</p>
                   </div>
                   <button
@@ -1818,7 +1845,7 @@ function OrderSummary({
                     onClick={() => onMoveBackToCart(item.id)}
                     className="shrink-0 rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
                   >
-                    Mover para o carrinho
+                    {m.moveToCart}
                   </button>
                 </li>
               ))}
@@ -1830,7 +1857,7 @@ function OrderSummary({
           <div className="border-t px-5 py-4">
             <div className="mb-2 flex items-center gap-2">
               <ExtensionBadge label="coupons" />
-              <span className="text-xs font-medium text-muted-foreground">Cupom de desconto</span>
+              <span className="text-xs font-medium text-muted-foreground">{m.couponTitle}</span>
             </div>
             {appliedCoupon ? (
               <div className="flex items-center justify-between gap-3 rounded-lg border border-success/30 bg-success/5 px-3 py-2">
@@ -1838,7 +1865,7 @@ function OrderSummary({
                   <Tag className="size-4 shrink-0 text-success" aria-hidden="true" />
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-success">{appliedCoupon.code}</p>
-                    <p className="text-xs text-muted-foreground">{appliedCoupon.label}</p>
+                    <p className="text-xs text-muted-foreground">{s.coupons[appliedCoupon.code]}</p>
                   </div>
                 </div>
                 <button
@@ -1846,7 +1873,7 @@ function OrderSummary({
                   onClick={onRemoveCoupon}
                   className="shrink-0 rounded-md border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted"
                 >
-                  Remover
+                  {m.remove}
                 </button>
               </div>
             ) : (
@@ -1862,7 +1889,7 @@ function OrderSummary({
                         onApplyCoupon()
                       }
                     }}
-                    placeholder="Código do cupom"
+                    placeholder={m.couponPlaceholder}
                     className={`${inputClass} uppercase`}
                   />
                   <button
@@ -1871,11 +1898,11 @@ function OrderSummary({
                     disabled={!couponInput.trim()}
                     className="shrink-0 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Aplicar
+                    {m.apply}
                   </button>
                 </div>
-                {couponError && <p className="text-xs font-medium text-destructive">{couponError}</p>}
-                <p className="text-[11px] text-muted-foreground">Experimente BEMVINDO10 ou FRETEGRATIS.</p>
+                {couponInvalid && <p className="text-xs font-medium text-destructive">{m.couponInvalid}</p>}
+                <p className="text-[11px] text-muted-foreground">{m.couponHint}</p>
               </div>
             )}
           </div>
@@ -1883,26 +1910,26 @@ function OrderSummary({
 
         <dl className="flex flex-col border-t px-5 py-4 text-sm">
           <div className="flex justify-between">
-            <dt className="text-muted-foreground">Subtotal</dt>
+            <dt className="text-muted-foreground">{m.subtotal}</dt>
             <dd className="tabular-nums">{brl(totals.subtotal)}</dd>
           </div>
           <Collapse innerClassName="pt-2" open={warranty}>
             <div className="flex justify-between">
-              <dt className="text-muted-foreground">Garantia Estendida</dt>
+              <dt className="text-muted-foreground">{m.warranty}</dt>
               <dd className="tabular-nums">{brl(WARRANTY_PRICE)}</dd>
             </div>
           </Collapse>
           <div className="flex justify-between pt-2">
             <dt className="flex items-center gap-1.5 text-muted-foreground">
-              <Truck className="size-4" aria-hidden="true" /> Frete
+              <Truck className="size-4" aria-hidden="true" /> {m.shipping}
             </dt>
             <dd className={`tabular-nums ${totals.shippingValue === 0 ? 'font-medium text-success' : ''}`}>
-              {totals.shippingValue === 0 ? 'Grátis' : brl(totals.shippingValue)}
+              {totals.shippingValue === 0 ? m.free : brl(totals.shippingValue)}
             </dd>
           </div>
           <Collapse innerClassName="pt-2" open={totals.discount - totals.couponDiscount > 0}>
             <div className="flex justify-between text-success">
-              <dt>Desconto Pix (5%)</dt>
+              <dt>{m.pixDiscount}</dt>
               <dd className="tabular-nums">- {brl(totals.discount - totals.couponDiscount)}</dd>
             </div>
           </Collapse>
@@ -1910,7 +1937,7 @@ function OrderSummary({
             <div className="flex justify-between text-success">
               <dt className="flex items-center gap-1.5">
                 <Tag className="size-3.5" aria-hidden="true" />
-                Cupom {appliedCoupon?.code}
+                {m.coupon(appliedCoupon?.code ?? '')}
               </dt>
               <dd className="tabular-nums">- {brl(totals.couponDiscount)}</dd>
             </div>
@@ -1919,33 +1946,33 @@ function OrderSummary({
             <div className="flex items-center justify-between gap-2 rounded-lg bg-success/5 px-3 py-2 text-success">
               <dt className="flex items-center gap-1.5 font-medium">
                 <Users className="size-3.5" aria-hidden="true" />
-                Compra dividida com um amigo
+                {m.splitWithFriend}
               </dt>
-              <dd className="text-xs text-muted-foreground">Pedido: {brl(totals.orderTotal)}</dd>
+              <dd className="text-xs text-muted-foreground">{m.orderValue(brl(totals.orderTotal))}</dd>
             </div>
           </Collapse>
           <div className="mt-2 flex items-baseline justify-between border-t pt-3">
-            <dt className="font-semibold">{totals.customerShare < 1 ? 'Você paga agora (50%)' : 'Total'}</dt>
+            <dt className="font-semibold">{totals.customerShare < 1 ? m.payNow : m.total}</dt>
             <dd className="text-xl font-semibold tabular-nums" aria-live="polite">
               {brl(totals.total)}
             </dd>
           </div>
           <Collapse innerClassName="pt-2" open={totals.customerShare < 1}>
             <p className="text-right text-xs text-muted-foreground">
-              Seu amigo paga {brl(totals.friendAmount)} depois, pelo link
+              {m.friendPays(brl(totals.friendAmount))}
             </p>
           </Collapse>
           {installments > 1 && (
             <p className="pt-2 text-right text-xs text-muted-foreground">
-              {installments}x de {brl(totals.total / installments)} sem juros
+              {m.installmentLine(installments, brl(totals.total / installments))}
             </p>
           )}
           <Collapse innerClassName="pt-2" open={!!thresholdNudge}>
             <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
               <CreditCard className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
               <span>
-                Faltam <strong className="tabular-nums">{brl(thresholdNudge?.missing ?? 0)}</strong> para parcelar em até{' '}
-                <strong>{thresholdNudge?.max}x sem juros</strong>
+                {m.thresholdBefore} <strong className="tabular-nums">{brl(thresholdNudge?.missing ?? 0)}</strong>{' '}
+                {m.thresholdMiddle} <strong>{m.thresholdMax(thresholdNudge?.max ?? 0)}</strong>
               </span>
             </div>
           </Collapse>
@@ -1954,7 +1981,7 @@ function OrderSummary({
               {totals.amounts.map((a) => (
                 <li key={a.method} className="flex justify-between">
                   <span className="text-muted-foreground">
-                    {METHOD_LABEL[a.method]} · {a.percent}%
+                    {s.method[a.method]} · {a.percent}%
                   </span>
                   <span className="font-medium tabular-nums">{brl(a.amount)}</span>
                 </li>
@@ -1971,7 +1998,7 @@ function OrderSummary({
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <ShieldCheck className="size-4" aria-hidden="true" />
-            {canConfirm ? 'Confirmar pedido' : 'Selecione um pagamento'}
+            {canConfirm ? m.confirm : m.selectPayment}
           </button>
         </div>
       </div>
@@ -1998,15 +2025,15 @@ function SuccessPage({
   pixMode: 'qr' | 'copy'
   onBack: () => void
 }) {
+  const { s, brl } = useI18n()
+  const t = s.success
   const pix = amounts.find((a) => a.method === 'pix')
-  const shareText = encodeURIComponent(
-    `Oi! Reservei um pedido na Allmart (#${ORDER_ID}). Falta ${brl(friendAmount)} para finalizar — o link expira em 2h: https://allmart.example/pagar/${ORDER_ID}`,
-  )
+  const shareText = encodeURIComponent(t.shareMessage(ORDER_ID, brl(friendAmount)))
 
   const methodDetail = (a: (typeof amounts)[number]) => {
-    if (a.method === 'card') return installments > 1 ? `${installments}x de ${brl(a.amount / installments)}` : 'À vista'
-    if (a.method === 'koin') return `4x de ${brl(a.amount / 4)}`
-    return 'Aguardando pagamento'
+    if (a.method === 'card') return installments > 1 ? t.installments(installments, brl(a.amount / installments)) : t.full
+    if (a.method === 'koin') return t.installments(4, brl(a.amount / 4))
+    return t.waiting
   }
 
   return (
@@ -2017,10 +2044,10 @@ function SuccessPage({
         </div>
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-balance">
-            {socialShare ? 'Pedido reservado! Falta a metade do valor.' : 'Pedido confirmado!'}
+            {socialShare ? t.titleShare : t.title}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Pedido <span className="font-mono font-medium text-foreground">#{ORDER_ID}</span> · {shippingLabel}
+            {t.order} <span className="font-mono font-medium text-foreground">#{ORDER_ID}</span> · {shippingLabel}
           </p>
         </div>
       </div>
@@ -2029,12 +2056,10 @@ function SuccessPage({
         <section aria-labelledby="pix-title" className="flex flex-col items-center gap-4 rounded-xl border bg-background p-6 text-center">
           <div>
             <h2 id="pix-title" className="font-semibold">
-              Pague {brl(pix.amount)} com Pix
+              {t.payPix(brl(pix.amount))}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {pixMode === 'copy'
-                ? 'Copie o código e cole na área Pix do app do seu banco.'
-                : 'Escaneie o QR Code no app do seu banco.'}
+              {pixMode === 'copy' ? t.hintCopy : t.hintQr}
             </p>
           </div>
           {pixMode === 'qr' && (
@@ -2056,12 +2081,12 @@ function SuccessPage({
             <div>
               <div className="mb-1 flex flex-wrap items-center gap-2">
                 <h2 id="share-title" className="font-semibold">
-                  Divida com um amigo
+                  {t.shareTitle}
                 </h2>
                 <ExtensionBadge label="social-share" />
               </div>
               <p className="text-sm text-muted-foreground text-pretty">
-                Você garantiu o pedido. O restante ({brl(friendAmount)}) pode ser pago por outra pessoa pelo link.
+                {t.shareBody(brl(friendAmount))}
               </p>
             </div>
           </div>
@@ -2072,21 +2097,21 @@ function SuccessPage({
             className="flex items-center justify-center gap-2 rounded-lg bg-success px-4 py-3 text-center text-sm font-semibold text-success-foreground transition-opacity hover:opacity-90"
           >
             <WhatsAppIcon className="size-4 shrink-0" />
-            Enviar link de pagamento para um amigo finalizar (Expira em 2h)
+            {t.shareCta}
           </a>
         </section>
       )}
 
       <section aria-labelledby="payment-summary-title" className="rounded-xl border bg-background">
         <h2 id="payment-summary-title" className="border-b px-5 py-3 text-sm font-semibold">
-          Resumo do pagamento
+          {t.paymentSummary}
         </h2>
         <ul className="flex flex-col px-5">
           {amounts.map((a) => (
             <li key={a.method} className="flex items-center justify-between gap-3 border-b py-3 text-sm last:border-b-0">
               <div>
                 <p className="font-medium">
-                  {METHOD_LABEL[a.method]}
+                  {s.method[a.method]}
                   {amounts.length > 1 && <span className="ml-1.5 text-xs text-muted-foreground">{a.percent}%</span>}
                 </p>
                 <p className="text-xs text-muted-foreground">{methodDetail(a)}</p>
@@ -2096,7 +2121,7 @@ function SuccessPage({
           ))}
         </ul>
         <div className="flex justify-between border-t px-5 py-3 text-sm">
-          <span className="font-semibold">Total</span>
+          <span className="font-semibold">{t.total}</span>
           <span className="font-semibold tabular-nums">{brl(total)}</span>
         </div>
       </section>
@@ -2107,13 +2132,14 @@ function SuccessPage({
         className="flex items-center justify-center gap-2 rounded-lg border bg-background px-4 py-3 text-sm font-medium transition-colors hover:bg-muted"
       >
         <RotateCcw className="size-4" aria-hidden="true" />
-        Voltar ao Checkout
+        {t.back}
       </button>
     </main>
   )
 }
 
 function PixCountdown() {
+  const { s } = useI18n()
   const [secondsLeft, setSecondsLeft] = useState(PIX_TIMER_SECONDS)
 
   useEffect(() => {
@@ -2134,7 +2160,7 @@ function PixCountdown() {
       aria-live="off"
     >
       <Timer className="size-4" aria-hidden="true" />
-      {expired ? 'Código expirado' : 'Expira em'}
+      {expired ? s.success.expired : s.success.expiresIn}
       <span className="font-mono tabular-nums">
         {mm}:{ss}
       </span>
@@ -2143,6 +2169,7 @@ function PixCountdown() {
 }
 
 function CopyPixButton({ primary = false }: { primary?: boolean }) {
+  const { s } = useI18n()
   const [copied, setCopied] = useState(false)
   const code = `00020126580014BR.GOV.BCB.PIX0136allmart-${ORDER_ID}5204000053039865802BR6009SAO PAULO`
 
@@ -2166,7 +2193,7 @@ function CopyPixButton({ primary = false }: { primary?: boolean }) {
       }
     >
       {copied ? <Check className="size-4 text-success" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}
-      {copied ? 'Código copiado' : 'Copiar Pix Copia e Cola'}
+      {copied ? s.success.copied : s.success.copy}
     </button>
   )
 }
@@ -2193,6 +2220,7 @@ function isFinderCell(r: number, c: number) {
 }
 
 function QrMock() {
+  const { s } = useI18n()
   const cells = useMemo(() => {
     const dark: [number, number][] = []
     for (let r = 0; r < QR_SIZE; r++) {
@@ -2211,7 +2239,7 @@ function QrMock() {
       className="size-44"
       shapeRendering="crispEdges"
       role="img"
-      aria-label="QR Code Pix para pagamento"
+      aria-label={s.success.qrLabel}
     >
       {cells.map(([r, c]) => (
         <rect key={`${r}-${c}`} x={c} y={r} width={1} height={1} fill="#09090b" />
