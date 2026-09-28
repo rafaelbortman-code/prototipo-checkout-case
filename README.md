@@ -87,10 +87,6 @@ pnpm install
 pnpm dev
 ```
 
-Abra [http://localhost:3000](http://localhost:3000). O componente principal está em `components/modular-checkout.tsx`, e os textos em português e inglês ficam em `components/i18n.ts`.
-
-## Idioma
-
-O seletor **PT | EN** no topo do painel troca toda a interface, inclusive as decisões do motor. O idioma fica na URL, então dá para compartilhar direto a versão em inglês com `?lang=en`. A moeda continua em reais, com a formatação de cada idioma.
+Abra [http://localhost:3000](http://localhost:3000). O componente principal está em `components/modular-checkout.tsx`.
 
 Este repositório está conectado a um [projeto v0](https://v0.app/chat/projects/prj_7MRLwwLujP8wmfHulOHlppDlj6Px); cada merge na `main` gera um novo deploy.
