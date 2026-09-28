@@ -36,7 +36,7 @@ O segmento não é um rótulo manual: é inferido do histórico de pedidos.
 | Histórico: nenhum pedido | Cadastro enxuto + frete expresso grátis travado | Tirar fricção e risco percebido da 1ª compra | Conversão de 1ª compra | Custo de frete por pedido |
 | Dispositivo mobile | Pix via copia e cola (sem QR) e Pix primeiro para quem não tem preferência | QR Code não é escaneável na mesma tela | Pix gerado → Pix pago | — |
 | Valor do carrinho | Parcelas sem juros por faixa (até 3x / 6x / 10x), com parcela mínima de R$ 50 | Não subsidiar juros em pedido pequeno | Conversão em cartão | Custo de parcelamento / GMV |
-| Carrinho perto da próxima faixa | "Faltam R$ X para parcelar em 10x" | Uma meta próxima estimula adicionar item | AOV | Abandono |
+| Carrinho perto da próxima faixa | "Faltam R$ X para parcelar em 10x" | Uma meta próxima estimula adicionar item | Ticket médio | Abandono |
 | Endereço perto de loja física | Retirada na loja oferecida; recomendada quando o frete é pago | Retirada zera o frete e entrega no mesmo dia | Share de retirada · custo logístico | NPS de entrega |
 
 ### O motor respeita as regras do lojista
